@@ -37,7 +37,7 @@
   },
   "elasticsearch": {
     "enabled": true,
-    "hosts": ["http://elasticsearch:9200"],
+    "hosts": ["elasticsearch:9200"],
     "index_prefix": "honeypot"
   },
   "response_templates": {
