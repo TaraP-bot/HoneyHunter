@@ -40,7 +40,7 @@ class ProtocolEvent(ConnectionEvent):
 class TelemetryCollector:
     """Central telemetry collection and forwarding"""
     
-    def __init__(self, output_dir: Path, es_enabled: bool = False):
+    def __init__(self, output_dir: Path, es_enabled: bool = False, es_hosts: list = None):
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -63,7 +63,10 @@ class TelemetryCollector:
         if es_enabled:
             try:
                 from elasticsearch import AsyncElasticsearch
-                self.es_client = AsyncElasticsearch(['http://localhost:9200'])
+                # Use provided hosts or default to localhost
+                hosts = es_hosts if es_hosts else ['http://localhost:9200']
+                self.es_client = AsyncElasticsearch(hosts)
+                logging.info(f"ElasticSearch client initialized with hosts: {hosts}")
             except ImportError:
                 logging.warning("elasticsearch-py not installed, disabling ES")
                 self.es_enabled = False
@@ -188,9 +191,16 @@ class HoneypotManager:
     
     def __init__(self, config_path: Optional[Path] = None):
         self.config = self._load_config(config_path)
+        
+        # Extract ElasticSearch config
+        es_config = self.config.get('elasticsearch', {})
+        es_enabled = es_config.get('enabled', False)
+        es_hosts = es_config.get('hosts', ['http://localhost:9200'])
+        
         self.telemetry = TelemetryCollector(
             Path(self.config['output_dir']),
-            es_enabled=self.config.get('elasticsearch', {}).get('enabled', False)
+            es_enabled=es_enabled,
+            es_hosts=es_hosts
         )
         self.services: Dict[str, HoneypotService] = {}
         
