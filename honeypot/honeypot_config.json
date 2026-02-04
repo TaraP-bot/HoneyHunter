@@ -1,0 +1,54 @@
+{
+  "output_dir": "./honeypot_data",
+  "services": {
+    "http": {
+      "enabled": true,
+      "port": 8080
+    },
+    "https": {
+      "enabled": false,
+      "port": 8443,
+      "cert": "./certs/honeypot.pem"
+    },
+    "ssh": {
+      "enabled": true,
+      "port": 2222
+    },
+    "ftp": {
+      "enabled": true,
+      "port": 2121
+    },
+    "dns": {
+      "enabled": true,
+      "port": 5353
+    },
+    "smtp": {
+      "enabled": false,
+      "port": 2525
+    },
+    "telnet": {
+      "enabled": false,
+      "port": 2323
+    },
+    "smb": {
+      "enabled": false,
+      "port": 4445
+    }
+  },
+  "elasticsearch": {
+    "enabled": true,
+    "hosts": ["elasticsearch:9200"],
+    "index_prefix": "honeypot"
+  },
+  "response_templates": {
+    "http_server": "Apache/2.4.41 (Ubuntu)",
+    "ssh_version": "OpenSSH_8.2p1 Ubuntu-4ubuntu0.5",
+    "ftp_banner": "FTP Server Ready"
+  },
+  "detection": {
+    "log_all_connections": true,
+    "detect_scanners": true,
+    "detect_exploits": true,
+    "auto_block": false
+  }
+}
