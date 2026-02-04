@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Honeypot Automated Installation Script
-# For Ubuntu 20.04+ servers
+# For Ubuntu 20.04+ servers with Tailscale support
 #
 # Usage: sudo bash install.sh [docker|native]
 #
@@ -19,6 +19,8 @@ NC='\033[0m' # No Color
 INSTALL_DIR="/opt/honeypot"
 HONEYPOT_USER="honeypot"
 DEPLOYMENT_METHOD="${1:-docker}"  # Default to docker
+TAILSCALE_IP=""
+USE_TAILSCALE=false
 
 # Functions
 print_header() {
@@ -61,6 +63,49 @@ check_ubuntu() {
     fi
 }
 
+detect_tailscale() {
+    print_header "Checking for Tailscale"
+    
+    if command -v tailscale &> /dev/null; then
+        TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "")
+        
+        if [[ -n "$TAILSCALE_IP" ]]; then
+            USE_TAILSCALE=true
+            print_success "Tailscale detected! IP: $TAILSCALE_IP"
+            print_info "This is the IP you'll use for SSH management"
+            echo ""
+            print_info "Benefits of using Tailscale:"
+            echo "  - Secure encrypted tunnel for management"
+            echo "  - Works from any IP address"
+            echo "  - SSH honeypot can safely run on port 22"
+            echo ""
+            read -p "Configure SSH to only listen on Tailscale IP? (recommended) (y/n) " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                CONFIGURE_SSH_TAILSCALE=true
+            else
+                CONFIGURE_SSH_TAILSCALE=false
+            fi
+        else
+            print_warning "Tailscale is installed but not connected"
+            print_info "Run: tailscale up"
+            print_info "Then re-run this installer"
+            exit 1
+        fi
+    else
+        print_info "Tailscale not detected"
+        print_warning "For secure management with dynamic IP, consider installing Tailscale first"
+        echo ""
+        print_info "Quick install: curl -fsSL https://tailscale.com/install.sh | sh"
+        echo ""
+        read -p "Continue without Tailscale? (y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 0
+        fi
+    fi
+}
+
 detect_architecture() {
     ARCH=$(uname -m)
     if [[ "$ARCH" != "x86_64" ]] && [[ "$ARCH" != "aarch64" ]]; then
@@ -71,12 +116,19 @@ detect_architecture() {
 check_existing_ssh() {
     SSH_PORT=$(ss -tlnp | grep sshd | grep -oP ':\K\d+' | head -1)
     
+    if [[ "$USE_TAILSCALE" == true ]]; then
+        print_success "Using Tailscale for SSH management"
+        print_info "SSH honeypot can safely run on port 22"
+        print_info "Your management SSH will be configured to listen only on Tailscale"
+        return
+    fi
+    
     if [[ "$SSH_PORT" == "22" ]]; then
         print_warning "SSH is currently running on port 22"
         print_warning "The honeypot SSH will also want to use port 22"
         echo ""
         print_info "Options:"
-        echo "  1. Change your SSH to another port (recommended: 2222)"
+        echo "  1. Change your SSH to another port (e.g., 2222)"
         echo "  2. Run honeypot SSH on alternate port (e.g., 2222)"
         echo "  3. Skip SSH honeypot entirely"
         echo ""
@@ -103,8 +155,8 @@ change_ssh_port() {
         echo "Port 2222" >> /etc/ssh/sshd_config
     fi
     
-    print_info "Restarting SSH..."
-    systemctl restart sshd
+    print_info "Restarting SSH (Ubuntu uses 'ssh' service)..."
+    systemctl restart ssh
     
     print_success "SSH moved to port 2222"
     print_warning "IMPORTANT: Open a new terminal and test SSH on port 2222 before closing this session!"
@@ -124,11 +176,10 @@ install_dependencies() {
         wget \
         git \
         net-tools \
-        jq \
-        iptables-persistent \
-        ufw
+        jq
     
     print_success "Base dependencies installed"
+    print_info "Note: Firewall management should be done via Digital Ocean Cloud Firewall"
 }
 
 install_docker() {
@@ -345,46 +396,104 @@ EOF
     print_success "Systemd service created and enabled"
 }
 
-setup_firewall() {
-    print_header "Configuring Firewall"
-    
-    print_info "Setting up UFW..."
-    
-    # Reset UFW
-    ufw --force reset
-    
-    # Default policies
-    ufw default deny incoming
-    ufw default allow outgoing
-    
-    # SSH (management port)
-    CURRENT_SSH_PORT=$(ss -tlnp | grep sshd | grep -oP ':\K\d+' | head -1)
-    if [[ -n "$CURRENT_SSH_PORT" ]]; then
-        ufw allow $CURRENT_SSH_PORT/tcp comment 'SSH Management'
-        print_success "Allowed SSH on port $CURRENT_SSH_PORT"
+configure_ssh_for_tailscale() {
+    if [[ "$USE_TAILSCALE" != true ]] || [[ "$CONFIGURE_SSH_TAILSCALE" != true ]]; then
+        return
     fi
     
-    # Honeypot ports
-    ufw allow 80/tcp comment 'HTTP Honeypot'
-    ufw allow 22/tcp comment 'SSH Honeypot'
-    ufw allow 21/tcp comment 'FTP Honeypot'
-    ufw allow 53 comment 'DNS Honeypot'
+    print_header "Configuring SSH for Tailscale Only"
     
-    print_success "Honeypot ports configured"
+    print_info "Backing up SSH config..."
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.tailscale-backup
     
-    # Optional: Kibana
-    read -p "Allow external access to Kibana (port 5601)? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        ufw allow 5601/tcp comment 'Kibana'
-        print_success "Kibana port opened"
+    print_info "Configuring SSH to listen only on Tailscale IP: $TAILSCALE_IP"
+    
+    # Add ListenAddress for Tailscale
+    if ! grep -q "^ListenAddress $TAILSCALE_IP" /etc/ssh/sshd_config; then
+        echo "" >> /etc/ssh/sshd_config
+        echo "# Listen only on Tailscale interface" >> /etc/ssh/sshd_config
+        echo "ListenAddress $TAILSCALE_IP" >> /etc/ssh/sshd_config
     fi
     
-    # Enable firewall
-    ufw --force enable
+    print_info "Testing SSH configuration..."
+    if sshd -t; then
+        print_success "SSH configuration is valid"
+        
+        print_warning "About to restart SSH service"
+        print_warning "Make sure you can connect via Tailscale IP: $TAILSCALE_IP"
+        echo ""
+        print_info "Test in a NEW terminal BEFORE continuing:"
+        print_info "  ssh root@$TAILSCALE_IP"
+        echo ""
+        read -p "Press Enter when you've confirmed Tailscale SSH works..."
+        
+        print_info "Restarting SSH..."
+        systemctl restart ssh
+        
+        print_success "SSH now only listens on Tailscale!"
+        print_success "Management: ssh root@$TAILSCALE_IP"
+        print_success "Port 22 public traffic will go to honeypot"
+    else
+        print_error "SSH configuration test failed!"
+        print_info "Restoring backup..."
+        cp /etc/ssh/sshd_config.tailscale-backup /etc/ssh/sshd_config
+        systemctl restart ssh
+    fi
+}
+
+show_firewall_instructions() {
+    print_header "Digital Ocean Firewall Configuration"
     
-    print_success "Firewall configured"
-    ufw status verbose
+    if [[ "$USE_TAILSCALE" == true ]]; then
+        print_success "Using Tailscale - Firewall setup is simple!"
+        echo ""
+        print_info "Configure your Digital Ocean Cloud Firewall with these rules:"
+        echo ""
+        echo "Inbound Rules:"
+        echo "  Type        Protocol    Ports       Sources"
+        echo "  ─────────────────────────────────────────────────────"
+        echo "  Custom      TCP         80          All IPv4, All IPv6"
+        echo "  Custom      TCP         21          All IPv4, All IPv6"
+        echo "  Custom      TCP         22          All IPv4, All IPv6"
+        echo "  Custom      TCP         53          All IPv4, All IPv6"
+        echo "  Custom      TCP         5601        All IPv4, All IPv6 (Kibana - optional)"
+        echo ""
+        echo "Outbound Rules:"
+        echo "  All TCP     TCP         All         All IPv4, All IPv6"
+        echo "  All UDP     UDP         All         All IPv4, All IPv6"
+        echo ""
+        print_info "Your SSH is protected via Tailscale tunnel!"
+        print_success "Management: ssh root@$TAILSCALE_IP"
+    else
+        print_warning "Tailscale not configured"
+        echo ""
+        print_info "Configure your Digital Ocean Cloud Firewall:"
+        echo ""
+        echo "Inbound Rules:"
+        echo "  Type        Protocol    Ports       Sources"
+        echo "  ─────────────────────────────────────────────────────"
+        
+        if [[ "$SSH_PORT" == "2222" ]]; then
+            echo "  SSH         TCP         2222        Your IP only"
+        else
+            echo "  SSH         TCP         22          Your IP only"
+        fi
+        
+        echo "  Custom      TCP         80          All IPv4, All IPv6"
+        echo "  Custom      TCP         21          All IPv4, All IPv6"
+        echo "  Custom      TCP         53          All IPv4, All IPv6"
+        echo "  Custom      TCP         5601        All IPv4, All IPv6 (optional)"
+        echo ""
+        print_warning "Make sure to restrict SSH to your IP address only!"
+    fi
+    
+    echo ""
+    print_info "To configure:"
+    echo "  1. Go to Digital Ocean Dashboard"
+    echo "  2. Networking → Firewalls"
+    echo "  3. Create or update firewall with rules above"
+    echo "  4. Apply to your honeypot droplet"
+    echo ""
 }
 
 setup_logrotate() {
@@ -501,6 +610,16 @@ print_summary() {
     echo "  Location: $INSTALL_DIR"
     echo "  Data: $INSTALL_DIR/honeypot_data"
     echo ""
+    
+    if [[ "$USE_TAILSCALE" == true ]]; then
+        echo "=== Tailscale Configuration ==="
+        echo "  Tailscale IP: $TAILSCALE_IP"
+        echo "  Management SSH: ssh root@$TAILSCALE_IP"
+        echo ""
+        print_success "Your SSH is secured via Tailscale!"
+        echo ""
+    fi
+    
     echo "=== Active Services ==="
     echo "  HTTP:  Port 80"
     echo "  SSH:   Port 22"
@@ -511,7 +630,13 @@ print_summary() {
     if [[ "$DEPLOYMENT_METHOD" == "docker" ]]; then
         echo "=== Optional Services ==="
         echo "  ElasticSearch: http://localhost:9200"
-        echo "  Kibana:        http://$(hostname -I | awk '{print $1}'):5601"
+        
+        if [[ "$USE_TAILSCALE" == true ]]; then
+            PUBLIC_IP=$(curl -s https://api.ipify.org || echo "YOUR_DROPLET_IP")
+            echo "  Kibana:        http://$PUBLIC_IP:5601"
+        else
+            echo "  Kibana:        http://$(hostname -I | awk '{print $1}'):5601"
+        fi
         echo ""
     fi
     
@@ -535,13 +660,30 @@ print_summary() {
     echo "  - This honeypot will attract attackers"
     echo "  - Monitor disk space regularly"
     echo "  - Review captured data frequently"
-    echo "  - Keep your management SSH secure"
+    
+    if [[ "$USE_TAILSCALE" == true ]]; then
+        echo "  - Always connect via Tailscale: ssh root@$TAILSCALE_IP"
+        echo "  - Your real SSH is NOT exposed to the public internet"
+    else
+        echo "  - Keep your management SSH secure"
+        echo "  - Use Digital Ocean Cloud Firewall to restrict SSH access"
+    fi
     echo ""
     
     print_info "Next Steps:"
-    echo "  1. Monitor events: tail -f $INSTALL_DIR/honeypot_data/events.jsonl"
-    echo "  2. Generate report: honeypot-report $DEPLOYMENT_METHOD"
-    echo "  3. Access Kibana: http://$(hostname -I | awk '{print $1}'):5601 (if enabled)"
+    echo "  1. Configure Digital Ocean Cloud Firewall (see instructions above)"
+    echo "  2. Monitor events: tail -f $INSTALL_DIR/honeypot_data/events.jsonl"
+    echo "  3. Generate report: honeypot-report $DEPLOYMENT_METHOD"
+    
+    if [[ "$DEPLOYMENT_METHOD" == "docker" ]]; then
+        PUBLIC_IP=$(curl -s https://api.ipify.org || echo "YOUR_DROPLET_IP")
+        echo "  4. Access Kibana: http://$PUBLIC_IP:5601"
+    fi
+    
+    if [[ "$USE_TAILSCALE" == true ]]; then
+        echo ""
+        print_success "Remember: ssh root@$TAILSCALE_IP for management"
+    fi
     echo ""
     
     print_success "Happy hunting!"
@@ -557,6 +699,7 @@ main() {
     check_root
     check_ubuntu
     detect_architecture
+    detect_tailscale
     
     # Prompt for confirmation
     read -p "Continue with installation? (y/n) " -n 1 -r
@@ -579,7 +722,8 @@ main() {
     fi
     
     create_systemd_service
-    setup_firewall
+    configure_ssh_for_tailscale
+    show_firewall_instructions
     setup_logrotate
     create_helper_scripts
     start_honeypot
