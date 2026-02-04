@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  honeypot:
+    build: .
+    container_name: honeypot
+    restart: unless-stopped
+    ports:
+      # Map standard ports to honeypot ports
+      - "80:8080"      # HTTP
+      - "22:2222"      # SSH
+      - "21:2121"      # FTP
+      - "53:5353/tcp"  # DNS
+    volumes:
+      # Persistent data storage
+      - ./honeypot_data:/app/honeypot_data
+      # Custom configuration (optional)
+      - ./honeypot_config.json:/app/honeypot_config.json:ro
+    networks:
+      - honeypot_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      - TZ=UTC
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE  # Only if using ports < 1024
+
+  # Optional: ElasticSearch for telemetry storage
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: honeypot_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - honeypot_net
+    restart: unless-stopped
+
+  # Optional: Kibana for visualization
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: honeypot_kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    networks:
+      - honeypot_net
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+networks:
+  honeypot_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  elasticsearch_data:
+    driver: local
