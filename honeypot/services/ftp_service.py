@@ -109,6 +109,16 @@ class FTPHoneypot(HoneypotService):
     
     async def _log_command(self, command: str, source_ip: str, session_id: str):
         """Log FTP command"""
+        # Parse command and arguments
+        parts = command.split(None, 1)
+        cmd = parts[0].upper() if parts else ''
+        arg = parts[1] if len(parts) > 1 else ''
+        
+        # Redact password from logging
+        display_arg = arg
+        if cmd == 'PASS':
+            display_arg = '***REDACTED***'
+        
         event = ProtocolEvent(
             timestamp=datetime.utcnow().isoformat(),
             event_type='ftp_command',
@@ -118,8 +128,11 @@ class FTPHoneypot(HoneypotService):
             protocol='ftp',
             service=self.name,
             session_id=session_id,
-            payload=command,
-            decoded_payload={'command': command.split()[0] if command else ''}
+            decoded_payload={
+                'command': cmd,
+                'argument': arg if cmd != 'PASS' else '***REDACTED***',
+                'full_command': f"{cmd} {display_arg}" if display_arg else cmd
+            }
         )
         
         await self.telemetry.log_event(event)

@@ -228,25 +228,35 @@ class HTTPHoneypot(HoneypotService):
                     if b'Content-Disposition' in part and b'filename=' in part:
                         # Extract filename
                         filename_match = re.search(rb'filename="([^"]+)"', part)
-                        filename = filename_match.group(1).decode() if filename_match else 'unknown'
+                        filename = filename_match.group(1).decode('utf-8', errors='ignore') if filename_match else 'unknown'
                         
                         # Extract file data (after double CRLF)
                         if b'\r\n\r\n' in part:
                             file_data = part.split(b'\r\n\r\n', 1)[1]
-                            file_data = file_data.rstrip(b'\r\n')
                             
-                            metadata = {
-                                'filename': filename,
-                                'method': request.method,
-                                'path': request.path,
-                                'user_agent': request.get_user_agent()
-                            }
+                            # Remove trailing CRLF and boundary markers more carefully
+                            # The file data ends before the next boundary or final boundary
+                            if b'\r\n' in file_data:
+                                # Split at last CRLF to remove trailing boundary
+                                file_data = file_data.rsplit(b'\r\n', 1)[0]
                             
-                            await self.telemetry.save_sample(
-                                file_data, source_ip, 'http_upload', metadata
-                            )
+                            # Only save if we have actual data
+                            if file_data and len(file_data) > 0:
+                                metadata = {
+                                    'filename': filename,
+                                    'method': request.method,
+                                    'path': request.path,
+                                    'user_agent': request.get_user_agent()
+                                }
+                                
+                                file_hash = await self.telemetry.save_sample(
+                                    file_data, source_ip, 'http_upload', metadata
+                                )
+                                logging.info(f"Extracted upload: {filename} ({len(file_data)} bytes) -> {file_hash}")
+                            else:
+                                logging.warning(f"Empty file data for: {filename}")
         except Exception as e:
-            logging.error(f"Error extracting upload: {e}")
+            logging.error(f"Error extracting upload: {e}", exc_info=True)
     
     def _select_response(self, request: HTTPRequest) -> str:
         """Select appropriate response based on request"""
