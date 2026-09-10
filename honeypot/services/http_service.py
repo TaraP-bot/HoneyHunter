@@ -109,7 +109,7 @@ class HTTPHoneypot(HoneypotService):
     """HTTP/HTTPS honeypot service"""
     
     def __init__(self, port: int, telemetry, ssl_cert: Optional[Path] = None):
-        super().__init__("HTTP" if port == 80 else "HTTPS", port, telemetry)
+        super().__init__("HTTP", port, telemetry)
         self.ssl_cert = ssl_cert
         
         # Response templates
@@ -127,7 +127,9 @@ class HTTPHoneypot(HoneypotService):
         session_id = self.telemetry.generate_session_id(
             source_ip, source_port, self.port
         )
+        reader, writer = self.capture_streams(reader, writer, session_id)
         
+        close_reason = "handler_complete"
         try:
             # Read request (with timeout)
             raw_request = await asyncio.wait_for(
@@ -138,11 +140,38 @@ class HTTPHoneypot(HoneypotService):
             if not raw_request:
                 return
             
-            request_str = raw_request.decode('utf-8', errors='ignore')
+            # An HTTP method token can span reads. Classify only after its space,
+            # or once bytes cannot be a bounded uppercase method token.
+            while b' ' not in raw_request and len(raw_request) < 32 and all(
+                65 <= byte <= 90 or byte == 45 for byte in raw_request
+            ):
+                more = await asyncio.wait_for(reader.read(65536), timeout=10.0)
+                if not more:
+                    break
+                raw_request += more
+            method = raw_request.split(b' ', 1)[0]
+            is_http = b' ' in raw_request and 0 < len(method) <= 32 and all(
+                65 <= byte <= 90 or byte == 45 for byte in method
+            )
+            if not is_http:
+                # Passive capture: no invented handshake or HTTP response.
+                total = len(raw_request)
+                while total < 1024 * 1024:
+                    data = await asyncio.wait_for(
+                        reader.read(min(65536, 1024 * 1024 - total)), timeout=30.0
+                    )
+                    if not data:
+                        close_reason = 'peer_eof'
+                        return
+                    total += len(data)
+                close_reason = 'binary_capture_limit'
+                return
+
+            request_str = raw_request.decode('utf-8', errors='replace')
             request = HTTPRequest(request_str)
             
             # Log connection event
-            await self._log_request(request, source_ip, source_port, session_id)
+            await self._log_request(request, source_ip, source_port, session_id, raw_request)
             
             # Detect and log attacks
             exploits = request.has_exploit_patterns()
@@ -159,8 +188,10 @@ class HTTPHoneypot(HoneypotService):
             await writer.drain()
             
         except asyncio.TimeoutError:
+            close_reason = 'idle_timeout'
             logging.debug(f"Timeout from {source_ip}")
         except Exception as e:
+            close_reason = 'handler_error'
             logging.error(f"Error handling HTTP client: {e}")
         finally:
             try:
@@ -168,9 +199,17 @@ class HTTPHoneypot(HoneypotService):
                 await writer.wait_closed()
             except:
                 pass
+            await self.telemetry.log_event(ProtocolEvent(
+                timestamp=datetime.utcnow().isoformat(), event_type='tcp_connection_closed',
+                source_ip=source_ip, source_port=source_port,
+                dest_port=writer.get_extra_info('sockname')[1],
+                dest_ip=writer.get_extra_info('sockname')[0],
+                protocol='tcp', service=self.name, session_id=session_id,
+                decoded_payload={'reason': close_reason},
+            ))
     
     async def _log_request(self, request: HTTPRequest, source_ip: str, 
-                          source_port: int, session_id: str):
+                          source_port: int, session_id: str, raw_request: bytes):
         """Log HTTP request event"""
         event = ProtocolEvent(
             timestamp=datetime.utcnow().isoformat(),
@@ -178,11 +217,11 @@ class HTTPHoneypot(HoneypotService):
             source_ip=source_ip,
             source_port=source_port,
             dest_port=self.port,
-            protocol='http' if self.port == 80 else 'https',
+            protocol='http',
             service=self.name,
             session_id=session_id,
             payload=request.raw[:2000],  # Truncate
-            payload_size=len(request.raw),
+            payload_size=len(raw_request),
             decoded_payload=request.to_dict(),
             headers=request.headers
         )

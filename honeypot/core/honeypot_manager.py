@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import hashlib
+import base64
 
 @dataclass
 class ConnectionEvent:
@@ -35,6 +36,11 @@ class ProtocolEvent(ConnectionEvent):
     payload_size: int = 0
     decoded_payload: Optional[Dict[str, Any]] = None
     headers: Optional[Dict[str, str]] = None
+    payload_base64: Optional[str] = None
+    direction: Optional[str] = None
+    dest_ip: Optional[str] = None
+    stream_offset: Optional[int] = None
+    capture_status: Optional[str] = None
     
 
 class TelemetryCollector:
@@ -148,6 +154,80 @@ class TelemetryCollector:
             await self.es_client.close()
 
 
+class StreamCapture:
+    """Record application stream bytes; reads/writes are not TCP packets."""
+
+    def __init__(self, service, writer, session_id):
+        self.service = service
+        self.writer = writer
+        self.session_id = session_id
+        self.peer = writer.get_extra_info('peername') or ('unknown', 0)
+        self.local = writer.get_extra_info('sockname') or ('unknown', service.port)
+        self.offsets = {'inbound': 0, 'outbound': 0}
+
+    async def record(self, data, direction, status):
+        if not data:
+            return
+        source, dest = (self.peer, self.local) if direction == 'inbound' else (self.local, self.peer)
+        offset = self.offsets[direction]
+        self.offsets[direction] += len(data)
+        await self.service.telemetry.log_event(ProtocolEvent(
+            timestamp=datetime.utcnow().isoformat(), event_type='tcp_data',
+            source_ip=source[0], source_port=source[1], dest_ip=dest[0], dest_port=dest[1],
+            protocol='tcp', service=self.service.name, session_id=self.session_id,
+            payload_size=len(data), payload_base64=base64.b64encode(data).decode('ascii'),
+            direction=direction, stream_offset=offset, capture_status=status,
+            decoded_payload={},
+        ))
+
+
+class CapturedReader:
+    def __init__(self, reader, capture):
+        self.reader, self.capture = reader, capture
+
+    async def read(self, n=-1):
+        data = await self.reader.read(n)
+        await self.capture.record(data, 'inbound', 'read')
+        return data
+
+    async def readline(self):
+        data = await self.reader.readline()
+        await self.capture.record(data, 'inbound', 'read')
+        return data
+
+
+class CapturedWriter:
+    def __init__(self, writer, capture):
+        self.writer, self.capture = writer, capture
+        self.pending = []
+
+    def __getattr__(self, name):
+        return getattr(self.writer, name)
+
+    def write(self, data):
+        self.writer.write(data)
+        self.pending.append(bytes(data))
+
+    async def drain(self):
+        pending, self.pending = self.pending, []
+        status = 'drained'
+        try:
+            await self.writer.drain()
+        except BaseException:
+            status = 'drain_failed'
+            raise
+        finally:
+            for data in pending:
+                await self.capture.record(data, 'outbound', status)
+
+    async def wait_closed(self):
+        # Preserve writes even when a handler closes without draining.
+        pending, self.pending = self.pending, []
+        for data in pending:
+            await self.capture.record(data, 'outbound', 'write_buffered')
+        await self.writer.wait_closed()
+
+
 class HoneypotService:
     """Base class for honeypot services"""
     
@@ -157,6 +237,10 @@ class HoneypotService:
         self.telemetry = telemetry
         self.server = None
         
+    def capture_streams(self, reader, writer, session_id):
+        capture = StreamCapture(self, writer, session_id)
+        return CapturedReader(reader, capture), CapturedWriter(writer, capture)
+
     async def start(self):
         """Start the service"""
         self.server = await asyncio.start_server(

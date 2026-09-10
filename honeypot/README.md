@@ -188,3 +188,56 @@ Contributions welcome! Areas for improvement:
 **Happy Hunting! 🎯**
 
 For detailed setup instructions, see `QUICKSTART.md`
+
+### Lossless TCP traffic capture
+
+`tcp_data` events capture the exact bytes returned by application reads and passed
+into writes for HTTP (including binary traffic on 8080), FTP, TCP DNS, and the
+simplified SSH fallback. `payload_base64` is the authoritative byte representation;
+`payload_size` counts those bytes. Existing protocol `payload` fields remain text
+previews and must not be used for byte-level analysis. Historical lossy payloads
+cannot be repaired by this change.
+
+Each capture includes `session_id`, `direction` (`inbound` / `outbound`),
+`source_ip`, `source_port`, `dest_ip`, `dest_port`, and `stream_offset` (separate
+zero-based byte offsets in each direction). An incoming connection might be
+`192.0.2.2:49804 -> 192.0.2.1:8080`; its response goes
+`192.0.2.1:8080 -> 192.0.2.2:49804`. These fields are directional for `tcp_data`;
+older protocol events retain their existing conventions. Ports come from the
+socket, so NAT/container port translation may hide the original external port.
+
+Outbound `capture_status` is `drained`, `drain_failed`, or `write_buffered`.
+Drained means the asyncio drain completed, not that the peer acknowledged or
+processed the bytes. Capture does not include TCP headers, ACKs, retransmissions,
+or original packet boundaries. AsyncSSH mode uses its own encrypted transport
+and is not covered; UDP is not implemented by this DNS service. Use separate
+packet capture if those details are required.
+
+The HTTP listener now treats non-HTTP input as a passive binary stream, retaining
+subsequent reads until peer EOF, a 30-second idle timeout, or a 1 MiB connection
+limit. It sends no speculative binary handshake. HTTP behavior remains a single
+request/read-and-response exchange, with a 10-second initial read timeout.
+`tcp_connection_closed` records the HTTP/binary handler's local closure reason.
+HTTP reads still do not implement full HTTP message reassembly. Silent binary
+peers may continue reconnecting because passive capture does not implement their
+protocol.
+
+To investigate possible four-byte big-endian length framing, select `tcp_data`
+events for one session and direction, sort by `stream_offset`, verify contiguous
+offsets, base64-decode and concatenate. Only then examine length prefixes: a TCP
+read can split a prefix or contain multiple frames. A stream of 114 bytes could
+contain `4 + 23 + 4 + 83`, but that interpretation must match the actual bytes.
+Framing, varying entropy, and reconnect timing alone do not prove C2, encryption,
+or ephemeral key exchange; no such classification is assigned automatically.
+
+The Elasticsearch template includes the new fields (`payload_base64` as binary).
+Apply the updated template as part of your normal deployment before new daily
+indices are created; it does not change mappings of existing indices. Capture is
+also written to `events.jsonl`. Full capture increases log volume, so account for
+it in existing retention and storage settings.
+
+Offline regression checks (no listening sockets or external services):
+
+```sh
+python3 -m unittest discover -s honeypot/tests -v
+```

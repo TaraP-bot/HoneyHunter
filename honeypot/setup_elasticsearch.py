@@ -62,6 +62,11 @@ class ElasticSearchSetup:
                                 }
                             }
                         },
+                        "payload_base64": {"type": "binary"},
+                        "direction": {"type": "keyword"},
+                        "dest_ip": {"type": "ip"},
+                        "stream_offset": {"type": "long"},
+                        "capture_status": {"type": "keyword"},
                         "payload_size": {
                             "type": "integer"
                         },

@@ -85,6 +85,7 @@ class SSHHoneypot(HoneypotService):
         session_id = self.telemetry.generate_session_id(
             source_ip, source_port, self.port
         )
+        reader, writer = self.capture_streams(reader, writer, session_id)
         
         try:
             # Send SSH version
