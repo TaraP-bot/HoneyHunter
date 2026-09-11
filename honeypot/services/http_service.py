@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 
 from honeypot_manager import HoneypotService, ProtocolEvent
+from http_capture import collect_request, extract_parts
 
 
 class HTTPRequest:
@@ -167,6 +168,9 @@ class HTTPHoneypot(HoneypotService):
                 close_reason = 'binary_capture_limit'
                 return
 
+            raw_request, body, capture_headers, capture_status = await collect_request(
+                raw_request, reader, writer
+            )
             request_str = raw_request.decode('utf-8', errors='replace')
             request = HTTPRequest(request_str)
             
@@ -178,9 +182,10 @@ class HTTPHoneypot(HoneypotService):
             if exploits:
                 await self._log_attack(request, exploits, source_ip, session_id)
             
-            # Save uploaded files
-            if 'file_upload' in exploits:
-                await self._extract_upload(raw_request, source_ip, request)
+            await self._capture_submission(
+                raw_request, body, capture_headers, capture_status,
+                request, source_ip, source_port, session_id
+            )
             
             # Generate response
             response = self._select_response(request)
@@ -252,51 +257,45 @@ class HTTPHoneypot(HoneypotService):
         await self.telemetry.log_event(event)
         logging.warning(f"Attack detected from {source_ip}: {', '.join(exploits.keys())}")
     
-    async def _extract_upload(self, raw_data: bytes, source_ip: str, 
-                             request: HTTPRequest):
-        """Extract and save uploaded files"""
-        try:
-            # Simple multipart boundary extraction
-            content_type = request.headers.get('Content-Type', '')
-            if 'boundary=' in content_type:
-                boundary = content_type.split('boundary=')[1].strip()
-                
-                # Find file data between boundaries
-                parts = raw_data.split(f'--{boundary}'.encode())
-                for part in parts:
-                    if b'Content-Disposition' in part and b'filename=' in part:
-                        # Extract filename
-                        filename_match = re.search(rb'filename="([^"]+)"', part)
-                        filename = filename_match.group(1).decode('utf-8', errors='ignore') if filename_match else 'unknown'
-                        
-                        # Extract file data (after double CRLF)
-                        if b'\r\n\r\n' in part:
-                            file_data = part.split(b'\r\n\r\n', 1)[1]
-                            
-                            # Remove trailing CRLF and boundary markers more carefully
-                            # The file data ends before the next boundary or final boundary
-                            if b'\r\n' in file_data:
-                                # Split at last CRLF to remove trailing boundary
-                                file_data = file_data.rsplit(b'\r\n', 1)[0]
-                            
-                            # Only save if we have actual data
-                            if file_data and len(file_data) > 0:
-                                metadata = {
-                                    'filename': filename,
-                                    'method': request.method,
-                                    'path': request.path,
-                                    'user_agent': request.get_user_agent()
-                                }
-                                
-                                file_hash = await self.telemetry.save_sample(
-                                    file_data, source_ip, 'http_upload', metadata
-                                )
-                                logging.info(f"Extracted upload: {filename} ({len(file_data)} bytes) -> {file_hash}")
-                            else:
-                                logging.warning(f"Empty file data for: {filename}")
-        except Exception as e:
-            logging.error(f"Error extracting upload: {e}", exc_info=True)
-    
+    async def _capture_submission(self, raw, body, headers, status, request,
+                                  source_ip, source_port, session_id):
+        """Save complete submission evidence regardless of extension or MIME type."""
+        if not body and request.method not in ('POST', 'PUT', 'PATCH') and status == 'complete':
+            return
+        metadata = {
+            'session_id': session_id, 'source_port': source_port, 'dest_port': self.port,
+            'method': request.method, 'path': request.path,
+            'content_type': headers.get('content-type', ''),
+            'content_encoding': headers.get('content-encoding', ''),
+            'capture_status': status, 'user_agent': request.get_user_agent(),
+        }
+        async def save(data, details):
+            info = {**metadata, **details}
+            digest = await self.telemetry.save_sample(data, source_ip, 'http_upload', info)
+            await self.telemetry.log_event(ProtocolEvent(
+                timestamp=datetime.utcnow().isoformat(), event_type='http_artifact',
+                source_ip=source_ip, source_port=source_port, dest_port=self.port,
+                protocol='http', service=self.name, session_id=session_id,
+                payload_size=len(data), decoded_payload={**info, 'sha256': digest},
+            ))
+
+        await save(raw, {'artifact_kind': 'http_request'})
+        await save(body, {'artifact_kind': 'http_body'})
+        if status == 'complete' and not headers.get('content-encoding'):
+            try:
+                for index, (data, details) in enumerate(extract_parts(body, headers.get('content-type', ''))):
+                    if index >= 256:
+                        await self.telemetry.log_event(ProtocolEvent(
+                            timestamp=datetime.utcnow().isoformat(), event_type='http_extraction_limit',
+                            source_ip=source_ip, source_port=source_port, dest_port=self.port,
+                            protocol='http', service=self.name, session_id=session_id,
+                            decoded_payload={'part_limit': 256, 'raw_body_preserved': True},
+                        ))
+                        break
+                    await save(data, {**details, 'part_index': index})
+            except (ValueError, UnicodeError) as exc:
+                logging.warning('Upload extraction failed; raw body preserved: %s', exc)
+
     def _select_response(self, request: HTTPRequest) -> str:
         """Select appropriate response based on request"""
         path = request.path.lower()

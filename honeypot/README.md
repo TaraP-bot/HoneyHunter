@@ -215,10 +215,9 @@ packet capture if those details are required.
 
 The HTTP listener now treats non-HTTP input as a passive binary stream, retaining
 subsequent reads until peer EOF, a 30-second idle timeout, or a 1 MiB connection
-limit. It sends no speculative binary handshake. HTTP behavior remains a single
-request/read-and-response exchange, with a 10-second initial read timeout.
+limit. It sends no speculative binary handshake. HTTP handles one request per connection, with a 10-second initial read timeout.
 `tcp_connection_closed` records the HTTP/binary handler's local closure reason.
-HTTP reads still do not implement full HTTP message reassembly. Silent binary
+Silent binary
 peers may continue reconnecting because passive capture does not implement their
 protocol.
 
@@ -241,3 +240,45 @@ Offline regression checks (no listening sockets or external services):
 ```sh
 python3 -m unittest discover -s honeypot/tests -v
 ```
+
+
+### HTTP submissions and script uploads
+
+The listener now reassembles headers and bodies across TCP reads and accepts
+`Content-Length`, chunked transfer encoding (including trailers), and
+`Expect: 100-continue`. It saves submissions independently of attack detection,
+file extension, and content type:
+
+- Full HTTP request evidence and a separate body sample for POST, PUT, PATCH,
+  and other methods that carry a body.
+- Multipart files of any extension, including `.php`, `.jsp`, `.aspx`, shell
+  scripts, archives, and executables, plus multipart text fields and empty files.
+- Percent-decoded URL-encoded form values, including duplicate fields.
+- Raw JSON, XML, text, binary, and content-encoded bodies. Compressed bodies are
+  retained as received, not decompressed; JSON string values are not separately
+  interpreted or executed.
+
+Samples continue to use `samples/<sha256>.bin` regardless of original extension:
+**a PHP upload is stored as a .bin file containing the PHP bytes**. The companion
+JSON records metadata. `http_artifact` events in `events.jsonl` link each sample
+hash to the session, source port, request path, capture status, artifact kind,
+and original multipart filename/form field where provided. Repeated identical
+content shares a sample; its sidecar describes the latest save, while events
+retain the individual occurrences. Client filenames are metadata only and never
+used as local filesystem paths. A request to `/shell.php` by itself does not
+supply the server-side PHP source; only content actually submitted is captured.
+
+Collection is bounded to 64 KiB headers, 10 MiB body, 12 MiB wire data, a
+10-second idle read timeout, and 60 seconds total after HTTP classification.
+Incomplete, oversized, malformed, and timed-out requests retain collected request
+evidence and any assembled body, with a non-`complete` capture status. They are
+not treated as complete uploads. Extraction is limited to 256 top-level parts or
+form fields; the full captured body remains available beyond that limit. Nested
+multipart content is retained in the body but not recursively extracted.
+Ambiguous Content-Length/Transfer-Encoding combinations are retained as evidence
+without trying to choose an interpretation. Unframed bytes already received are
+saved, but HTTP bodies without length or chunked framing are not read to EOF.
+
+These changes require rebuilding the honeypot image from the updated source;
+the existing Dockerfile already copies the entire `services/` directory. No
+Compose changes or additional Python packages are needed.
