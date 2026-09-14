@@ -282,3 +282,72 @@ saved, but HTTP bodies without length or chunked framing are not read to EOF.
 These changes require rebuilding the honeypot image from the updated source;
 the existing Dockerfile already copies the entire `services/` directory. No
 Compose changes or additional Python packages are needed.
+
+### Searchable sample contents: `honeypot-samples`
+
+When Elasticsearch is enabled, saving a sample now also indexes a searchable
+text derivative in the separate `honeypot-samples` index. One document is created
+per SHA-256 (`_id` equals the hash); repeated captures do not overwrite that
+sample document. Its metadata describes the first successful indexing, while
+`http_artifact` events continue to describe individual HTTP occurrences. A
+backfilled sample uses the available sidecar metadata, which may reflect a later
+occurrence. The original `.bin` and JSON files are still saved locally first.
+
+Search `content_text` for PHP source, commands, URLs, or other text. Valid UTF-8
+without binary control characters is indexed as text; other data contributes
+printable ASCII strings of at least four characters. Only the first 1 MiB of a
+sample is examined for text. `extraction_method`, `bytes_examined`, and
+`text_truncated` describe this derivative; the SHA-256 and `size` always describe
+the full sample. Files are not executed, unpacked, or decompiled. UTF-16 and
+compressed/encrypted contents are not decoded. Text searches use Elasticsearch's
+standard analyzer, not exact byte or arbitrary substring matching.
+
+The index includes searchable `filename`, `content_type`, `artifact_kind`, and
+`capture_status` fields when available, plus the complete supplied `metadata` in
+_source (not dynamically indexed). An exact-name template with priority 500
+separates its mappings from the older broad `honeypot-*` event template. Setup is
+automatic on the first sample write or backfill and requires Elasticsearch
+permissions to manage templates/mappings, create the index, and index documents.
+If indexing fails, local capture continues; the failure is logged and backfill
+can retry it. There is no automatic retry queue. Existing hash documents are
+skipped, so backfill does not refresh extraction or metadata for them.
+
+After copying the updated source to `/opt/honeypot`, rebuild there:
+
+```sh
+cd /opt/honeypot
+docker compose up -d --build honeypot
+```
+
+To index existing samples or retry files missed during an Elasticsearch outage:
+
+```sh
+docker compose exec honeypot python backfill_samples.py
+```
+
+The backfill script is included in the rebuilt image. It uses the configured
+Elasticsearch hosts and output directory; optional arguments are `--config`,
+`--samples-dir`, and `--host`. It streams files to verify their SHA-256 filenames,
+keeps only the text extraction prefix in memory, reports indexed/existing/failed
+counts, and exits nonzero on failures. Missing sidecars are allowed; malformed
+sidecars or hash mismatches are reported as failures. Backfill does not modify
+local files or start the honeypot.
+
+In Kibana, create a separate data view named `honeypot-samples`, using
+`indexed_at` as its time field (or no time filter to see all samples). For event
+views use `honeypot-20*`; the old `honeypot-*` pattern also matches the new samples
+index and would mix samples with connection events.
+
+Example in Kibana Dev Tools:
+
+```json
+GET honeypot-samples/_search
+{
+  "query": {"match": {"content_text": "base64_decode"}},
+  "_source": ["sha256", "filename", "content_text", "extraction_method", "text_truncated", "metadata"]
+}
+```
+
+An Elasticsearch result's `sha256` identifies the original
+`honeypot_data/samples/<sha256>.bin` file. Sample-index retention is independent of
+daily event-index retention; no deletion/expiry policy is installed by this code.

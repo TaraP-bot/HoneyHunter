@@ -14,6 +14,11 @@ from pathlib import Path
 import hashlib
 import base64
 
+if __package__:
+    from .sample_index import SampleIndexer, sample_document
+else:
+    from sample_index import SampleIndexer, sample_document
+
 @dataclass
 class ConnectionEvent:
     """Base telemetry event for all connections"""
@@ -72,6 +77,7 @@ class TelemetryCollector:
                 # Use provided hosts or default to localhost
                 hosts = es_hosts if es_hosts else ['http://localhost:9200']
                 self.es_client = AsyncElasticsearch(hosts)
+                self.sample_indexer = SampleIndexer(self.es_client)
                 logging.info(f"ElasticSearch client initialized with hosts: {hosts}")
             except ImportError:
                 logging.warning("elasticsearch-py not installed, disabling ES")
@@ -141,6 +147,13 @@ class TelemetryCollector:
         with open(meta_path, 'w') as f:
             json.dump(metadata, f, indent=2)
         
+        if self.es_enabled:
+            try:
+                await self.sample_indexer.index_document(sample_document(data, metadata))
+            except Exception as exc:
+                logging.error("Sample indexing failed for %s; local files retained. "
+                              "Retry with backfill_samples.py: %s", file_hash, exc)
+
         logging.info(f"Saved sample: {file_hash} ({len(data)} bytes) from {source_ip}")
         return file_hash
     

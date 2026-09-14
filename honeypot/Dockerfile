@@ -24,6 +24,7 @@ COPY core/ ./core/
 COPY services/ ./services/
 COPY honeypot.py .
 COPY analyze_telemetry.py .
+COPY backfill_samples.py .
 COPY honeypot_config.json .
 
 # Create data directory
