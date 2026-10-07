@@ -344,15 +344,21 @@ class SSHSessionHandler(asyncssh.SSHServerSession):
     def session_started(self):
         """Send welcome message and prompt"""
         self._chan.write(FAKE_MOTD.replace('\n', '\r\n') + '\r\n')
-        self._chan.write(f'root@{FAKE_HOSTNAME}:~# ')
+        self._prompt()
+
+    def _prompt(self):
+        """Show a prompt, as interactive bash does; without a PTY bash is
+        non-interactive and prints none"""
+        if self._chan.get_terminal_type() is not None:
+            self._chan.write(f'root@{FAKE_HOSTNAME}:~# ')
     
     def data_received(self, data, datatype):
         """Handle received data"""
+        # No manual echo: with a PTY, asyncssh's line editor already echoes
+        # input and ends the line; without one, real sshd doesn't echo.
+        # Echoing again showed every command twice, an obvious tell.
         self._input += data
-        
-        # Echo back for interactive feel
-        self._chan.write(data)
-        
+
         # Check for newline
         if '\n' in self._input or '\r' in self._input:
             command = self._input.strip()
@@ -369,12 +375,10 @@ class SSHSessionHandler(asyncssh.SSHServerSession):
                 if response:
                     # Terminals need CRLF; bare LF staircases the output
                     response = response.replace('\n', '\r\n')
-                    self._chan.write(f'\r\n{response}\r\n')
-                else:
-                    self._chan.write('\r\n')
-            
+                    self._chan.write(f'{response}\r\n')
+
             # Send new prompt
-            self._chan.write(f'root@{FAKE_HOSTNAME}:~# ')
+            self._prompt()
     
     def _get_command_response(self, command: str) -> str:
         """Get fake response for command"""
