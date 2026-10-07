@@ -18,6 +18,9 @@ import hashlib
 # the same few bytes easily occur in legitimate data
 SMALL_SAMPLE = 64
 
+# Container port -> public port, as published in docker-compose.yml
+PUBLIC_PORTS = {2222: 22, 8080: 80, 2121: 21, 5353: 53}
+
 
 class TelemetryAnalyzer:
     """Analyze honeypot telemetry data"""
@@ -174,9 +177,12 @@ class TelemetryAnalyzer:
         ip_ports = defaultdict(set)
         
         for event in self.events:
-            ip = event['source_ip']
-            port = event['dest_port']
-            ip_ports[ip].add(port)
+            # Outbound captures are the honeypot's own replies: their source
+            # is the container and their port the attacker's ephemeral port
+            if event.get('direction') == 'outbound':
+                continue
+            port = event.get('dest_port')
+            ip_ports[event['source_ip']].add(PUBLIC_PORTS.get(port, port))
         
         # IPs hitting 3+ different ports = scanner
         scanners = []
@@ -367,7 +373,7 @@ class TelemetryAnalyzer:
             report.append("-"*70)
             for scanner in scanners[:5]:
                 report.append(f"  {scanner['ip']:15s} - {scanner['port_count']} ports")
-                report.append(f"    Ports: {scanner['ports_scanned']}")
+                report.append(f"    Ports: {', '.join(str(p) for p in sorted(scanner['ports_scanned']))}")
         report.append("")
         
         # DNS Analysis
