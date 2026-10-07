@@ -17,6 +17,10 @@ class Conflict(Exception):
     status_code = 409
 
 
+class Forbidden(Exception):
+    status_code = 403
+
+
 class SampleTests(unittest.IsolatedAsyncioTestCase):
     def test_text_and_binary(self):
         data = b'<?php eval(base64_decode("test")); ?>'
@@ -49,6 +53,22 @@ class SampleTests(unittest.IsolatedAsyncioTestCase):
         client.index.side_effect = Conflict()
         self.assertFalse(await indexer.index_document(doc))
         self.assertEqual(client.indices.put_index_template.await_count, 1)
+
+    async def test_template_forbidden_still_indexes(self):
+        # A writer without manage_index_templates relies on es-setup's template
+        client = AsyncMock()
+        client.indices.exists.return_value = True
+        client.indices.put_index_template.side_effect = Forbidden()
+        indexer = SampleIndexer(client)
+        doc = sample_document(b'php code', {})
+        self.assertTrue(await indexer.index_document(doc))
+        client.index.assert_awaited_once()
+
+    async def test_template_other_errors_still_raise(self):
+        client = AsyncMock()
+        client.indices.put_index_template.side_effect = RuntimeError('offline')
+        with self.assertRaises(RuntimeError):
+            await SampleIndexer(client).ensure_index()
 
     async def test_failure_preserves_local_sample_and_disabled_es(self):
         with tempfile.TemporaryDirectory() as directory:

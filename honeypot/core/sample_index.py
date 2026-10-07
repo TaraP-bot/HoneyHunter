@@ -74,12 +74,18 @@ class SampleIndexer:
             if self.ready:
                 return
             # Exact, higher-priority template overrides the existing honeypot-* template.
-            await self.client.indices.put_index_template(
-                name='honeypot_samples_template', index_patterns=[SAMPLE_INDEX],
-                priority=500,
-                template={'mappings': MAPPINGS,
-                          'settings': {'number_of_shards': 1, 'number_of_replicas': 0}},
-            )
+            try:
+                await self.client.indices.put_index_template(
+                    name='honeypot_samples_template', index_patterns=[SAMPLE_INDEX],
+                    priority=500,
+                    template={'mappings': MAPPINGS,
+                              'settings': {'number_of_shards': 1, 'number_of_replicas': 0}},
+                )
+            except Exception as exc:
+                # A least-privilege writer may not manage templates; es-setup.sh
+                # installs this one with the same mappings instead
+                if error_status(exc) != 403:
+                    raise
             if not await self.client.indices.exists(index=SAMPLE_INDEX):
                 try:
                     await self.client.indices.create(index=SAMPLE_INDEX, mappings=MAPPINGS)

@@ -31,12 +31,14 @@ es POST /_security/user/kibana_system/_password <<EOF
 EOF
 
 echo "Creating honeypot_writer role"
-# Only what core/honeypot_manager.py and core/sample_index.py call:
-# put_index_template, indices.exists/create/put_mapping, and index with
-# auto or create-only IDs. No read, update, or delete of collected data.
+# Only what core/honeypot_manager.py and core/sample_index.py need:
+# indices.exists/create/put_mapping and index with auto or create-only IDs.
+# No read, update, or delete of collected data, and no template changes
+# (the samples template is installed below instead), so a compromised
+# honeypot container cannot alter how data is indexed.
 es PUT /_security/role/honeypot_writer <<'EOF'
 {
-  "cluster": ["manage_index_templates"],
+  "cluster": [],
   "indices": [{
     "names": ["honeypot-*"],
     "privileges": ["create_index", "create_doc", "view_index_metadata",
@@ -87,6 +89,31 @@ es PUT /_index_template/honeypot_template <<'EOF'
                "index.default_pipeline": "honeypot-enrich"},
   "mappings": {"properties": {
     "source_geo": {"properties": {"location": {"type": "geo_point"}}}}}}}
+EOF
+
+# The honeypot_writer role cannot manage templates, so install the samples
+# template here. Keep in sync with MAPPINGS in core/sample_index.py.
+echo "Installing honeypot_samples_template"
+es PUT /_index_template/honeypot_samples_template <<'EOF'
+{"index_patterns": ["honeypot-samples"],
+ "priority": 500,
+ "template": {
+  "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+  "mappings": {
+   "dynamic": false,
+   "properties": {
+    "sha256": {"type": "keyword"},
+    "size": {"type": "long"},
+    "indexed_at": {"type": "date"},
+    "content_text": {"type": "text"},
+    "extraction_method": {"type": "keyword"},
+    "text_truncated": {"type": "boolean"},
+    "bytes_examined": {"type": "long"},
+    "filename": {"type": "keyword", "ignore_above": 1024},
+    "content_type": {"type": "keyword", "ignore_above": 1024},
+    "artifact_kind": {"type": "keyword"},
+    "capture_status": {"type": "keyword"},
+    "metadata": {"type": "object", "enabled": false}}}}}
 EOF
 
 # Bring indices created before this template into line
