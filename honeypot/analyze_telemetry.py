@@ -14,6 +14,11 @@ from typing import Dict, List, Any, Set
 import hashlib
 
 
+# Captured content smaller than this is too generic for hash blocking:
+# the same few bytes easily occur in legitimate data
+SMALL_SAMPLE = 64
+
+
 class TelemetryAnalyzer:
     """Analyze honeypot telemetry data"""
     
@@ -207,9 +212,25 @@ class TelemetryAnalyzer:
             if meta_file.exists():
                 with open(meta_file) as f:
                     metadata = json.load(f)
-                    samples.append(metadata)
+                if metadata.get('source_ip') in self.exclude_ips:
+                    continue
+                samples.append(metadata)
         
+        samples.sort(key=lambda m: m.get('timestamp', ''), reverse=True)
         return samples
+    
+    @staticmethod
+    def sample_name(sample: Dict[str, Any]) -> str:
+        """Human-readable name: the uploaded file name when there is one,
+        otherwise where in the request the bytes came from"""
+        request = f"{sample.get('method', '?')} {sample.get('path', '?')}"
+        if sample.get('filename'):
+            return f"file '{sample['filename']}' ({request})"
+        if sample.get('field_name'):
+            return f"form field '{sample['field_name']}' ({request})"
+        kind = {'http_request': 'whole request', 'http_body': 'request body'}.get(
+            sample.get('artifact_kind'), sample.get('artifact_kind', 'data'))
+        return f"{kind} of {request}"
     
     def get_dns_analysis(self) -> Dict[str, Any]:
         """Analyze DNS queries for C2 patterns"""
@@ -373,13 +394,27 @@ class TelemetryAnalyzer:
         # Malware Samples
         samples = self.get_malware_samples()
         if samples:
-            report.append("CAPTURED MALWARE SAMPLES")
+            report.append("CAPTURED SAMPLES")
             report.append("-"*70)
-            for sample in samples[:10]:
-                report.append(f"  SHA256: {sample.get('sha256', 'unknown')}")
-                report.append(f"  Size:   {sample.get('size', 0)} bytes")
-                report.append(f"  Source: {sample.get('source_ip', 'unknown')}")
-                report.append(f"  Method: {sample.get('protocol', 'unknown')}")
+            report.append(f"{len(samples)} captured, newest first. Hashes of content under "
+                          f"{SMALL_SAMPLE} bytes are too generic to block safely.")
+            report.append("")
+            for sample in samples:
+                size = sample.get('size', 0)
+                report.append(f"  SHA256:  {sample.get('sha256', 'unknown')}")
+                report.append(f"  Name:    {self.sample_name(sample)}")
+                details = [sample.get('artifact_kind', '?'), f"{size} bytes"]
+                if sample.get('content_type'):
+                    details.append(sample['content_type'])
+                if sample.get('capture_status') not in (None, 'complete'):
+                    details.append(f"capture {sample['capture_status']}")
+                report.append(f"  Kind:    {', '.join(details)}")
+                report.append(f"  Source:  {sample.get('source_ip', 'unknown')} at "
+                              f"{sample.get('timestamp', '?')[:19]} via {sample.get('protocol', '?')}")
+                if sample.get('user_agent'):
+                    report.append(f"  Agent:   {sample['user_agent'][:90]}")
+                if size < SMALL_SAMPLE:
+                    report.append("  Note:    generic tiny content - do not block by this hash")
                 report.append("")
         
         report.append("="*70)
