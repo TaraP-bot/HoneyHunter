@@ -66,7 +66,7 @@ class TelemetryAnalyzer:
         # Login attempts
         login_events = [e for e in self.events if 'login' in e['event_type']]
         successful_logins = [e for e in login_events 
-                            if e.get('decoded_payload', {}).get('success', False)]
+                            if (e.get('decoded_payload') or {}).get('success', False)]
         
         # Downloads/uploads
         download_events = [e for e in self.events if 'download' in e['event_type']]
@@ -100,7 +100,7 @@ class TelemetryAnalyzer:
         types = Counter()
         
         for event in attack_events:
-            payload = event.get('decoded_payload', {})
+            payload = (event.get('decoded_payload') or {})
             if 'attack_types' in payload:
                 for attack_type in payload['attack_types']:
                     types[attack_type] += 1
@@ -112,7 +112,7 @@ class TelemetryAnalyzer:
         creds = Counter()
         
         for event in login_events:
-            payload = event.get('decoded_payload', {})
+            payload = (event.get('decoded_payload') or {})
             username = payload.get('username', 'unknown')
             password = payload.get('password', 'unknown')
             creds[f"{username}:{password}"] += 1
@@ -176,7 +176,7 @@ class TelemetryAnalyzer:
                 user_agents = set()
                 for event in self.events:
                     if event['source_ip'] == ip:
-                        headers = event.get('headers', {})
+                        headers = (event.get('headers') or {})
                         if 'User-Agent' in headers:
                             user_agents.add(headers['User-Agent'])
                 
@@ -218,7 +218,7 @@ class TelemetryAnalyzer:
         suspicious_domains = []
         
         for event in dns_events:
-            payload = event.get('decoded_payload', {})
+            payload = (event.get('decoded_payload') or {})
             domain = payload.get('domain', '')
             
             if domain:
@@ -253,7 +253,7 @@ class TelemetryAnalyzer:
         scanners = Counter()
         
         for event in http_attacks:
-            payload = event.get('decoded_payload', {})
+            payload = (event.get('decoded_payload') or {})
             
             # Count attack types
             for attack_type in payload.get('attack_types', []):
