@@ -39,8 +39,8 @@ class SSHHoneypot(HoneypotService):
             'test': ['test', ''],
         }
         
-        # SSH version string
-        self.ssh_version = "SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.5"
+        # SSH software version (asyncssh adds the "SSH-2.0-" prefix itself)
+        self.ssh_version = "OpenSSH_8.2p1 Ubuntu-4ubuntu0.5"
         
     async def start(self):
         """Start SSH honeypot server"""
@@ -89,7 +89,7 @@ class SSHHoneypot(HoneypotService):
         
         try:
             # Send SSH version
-            writer.write(f"{self.ssh_version}\r\n".encode())
+            writer.write(f"SSH-2.0-{self.ssh_version}\r\n".encode())
             await writer.drain()
             
             # Log connection
