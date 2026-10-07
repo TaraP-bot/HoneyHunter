@@ -288,7 +288,7 @@ setup_docker_deployment() {
     # .env is gitignored and readable by root only
     touch $INSTALL_DIR/.env
     chmod 600 $INSTALL_DIR/.env
-    for var in ELASTIC_PASSWORD KIBANA_SYSTEM_PASSWORD HONEYPOT_ES_PASSWORD; do
+    for var in ELASTIC_PASSWORD KIBANA_SYSTEM_PASSWORD HONEYPOT_ES_PASSWORD HONEYPOT_ANALYST_PASSWORD; do
         if ! grep -q "^${var}=" $INSTALL_DIR/.env; then
             echo "${var}=$(openssl rand -hex 24)" >> $INSTALL_DIR/.env
         fi
