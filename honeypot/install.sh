@@ -279,6 +279,11 @@ setup_docker_deployment() {
     # Set permissions
     chown -R $SUDO_USER:$SUDO_USER $INSTALL_DIR
     
+    # The container runs as the 'honeypot' user (UID 1000, see Dockerfile)
+    # and must be able to write to the bind-mounted data directory
+    chown -R 1000:1000 $INSTALL_DIR/honeypot_data
+    chmod 750 $INSTALL_DIR/honeypot_data
+    
     print_info "Building Docker images..."
     cd $INSTALL_DIR
     docker-compose build
