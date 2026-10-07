@@ -283,7 +283,18 @@ setup_docker_deployment() {
     # and must be able to write to the bind-mounted data directory
     chown -R 1000:1000 $INSTALL_DIR/honeypot_data
     chmod 750 $INSTALL_DIR/honeypot_data
-    
+
+    # Generate Elasticsearch passwords once, keeping any existing values.
+    # .env is gitignored and readable by root only
+    touch $INSTALL_DIR/.env
+    chmod 600 $INSTALL_DIR/.env
+    for var in ELASTIC_PASSWORD KIBANA_SYSTEM_PASSWORD HONEYPOT_ES_PASSWORD; do
+        if ! grep -q "^${var}=" $INSTALL_DIR/.env; then
+            echo "${var}=$(openssl rand -hex 24)" >> $INSTALL_DIR/.env
+        fi
+    done
+    print_info "Elasticsearch passwords are in $INSTALL_DIR/.env (Kibana login: elastic)"
+
     print_info "Building Docker images..."
     cd $INSTALL_DIR
     docker-compose build

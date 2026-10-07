@@ -28,6 +28,9 @@ services:
         max-file: "3"
     environment:
       - TZ=UTC
+      # Least-privilege ES user created by es-setup; passwords live in .env
+      - ES_USERNAME=honeypot_writer
+      - ES_PASSWORD=${HONEYPOT_ES_PASSWORD:?Set HONEYPOT_ES_PASSWORD in .env}
     # Security options
     security_opt:
       - no-new-privileges:true
@@ -42,7 +45,12 @@ services:
     container_name: honeypot_elasticsearch
     environment:
       - discovery.type=single-node
-      - xpack.security.enabled=false
+      # Authentication on; TLS off as ES is only reachable on honeypot_net
+      # and 127.0.0.1
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:?Set ELASTIC_PASSWORD in .env}
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
@@ -52,18 +60,38 @@ services:
       - honeypot_net
     restart: unless-stopped
 
-  # Optional: Kibana for visualization
+  # One-shot: sets the kibana_system password and creates honeypot_writer
+  es-setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: honeypot_es_setup
+    entrypoint: ["bash", "/es-setup.sh"]
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:?Set ELASTIC_PASSWORD in .env}
+      - KIBANA_SYSTEM_PASSWORD=${KIBANA_SYSTEM_PASSWORD:?Set KIBANA_SYSTEM_PASSWORD in .env}
+      - HONEYPOT_ES_PASSWORD=${HONEYPOT_ES_PASSWORD:?Set HONEYPOT_ES_PASSWORD in .env}
+    volumes:
+      - ./es-setup.sh:/es-setup.sh:ro
+    networks:
+      - honeypot_net
+    depends_on:
+      - elasticsearch
+    restart: "no"
+
+  # Optional: Kibana for visualization (log in as elastic)
   kibana:
     image: docker.elastic.co/kibana/kibana:8.11.0
     container_name: honeypot_kibana
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_SYSTEM_PASSWORD:?Set KIBANA_SYSTEM_PASSWORD in .env}
     ports:
       - "127.0.0.1:5601:5601"
     networks:
       - honeypot_net
     depends_on:
-      - elasticsearch
+      es-setup:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 networks:

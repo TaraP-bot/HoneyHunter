@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 
 from core.sample_index import SampleIndexer, TEXT_BYTE_LIMIT, sample_document
@@ -59,7 +60,10 @@ async def main():
         parser.error(f'Samples directory does not exist: {directory}')
     hosts = [args.host] if args.host else config.get('elasticsearch', {}).get('hosts', ['http://localhost:9200'])
     from elasticsearch import AsyncElasticsearch
-    async with AsyncElasticsearch(hosts) as client:
+    basic_auth = None
+    if os.environ.get('ES_USERNAME'):
+        basic_auth = (os.environ['ES_USERNAME'], os.environ.get('ES_PASSWORD', ''))
+    async with AsyncElasticsearch(hosts, basic_auth=basic_auth) as client:
         indexer = SampleIndexer(client)
         await indexer.ensure_index()
         counts = await backfill(directory, indexer)

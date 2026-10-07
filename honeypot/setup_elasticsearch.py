@@ -5,6 +5,7 @@ Creates index templates and initial dashboards
 """
 
 import json
+import os
 import requests
 from datetime import datetime
 
@@ -15,6 +16,10 @@ class ElasticSearchSetup:
     def __init__(self, es_host='http://localhost:9200'):
         self.es_host = es_host
         self.index_prefix = 'honeypot'
+        # Credentials come from the environment, never the command line
+        self.auth = None
+        if os.environ.get('ES_USERNAME'):
+            self.auth = (os.environ['ES_USERNAME'], os.environ.get('ES_PASSWORD', ''))
     
     def create_index_template(self):
         """Create index template for honeypot events"""
@@ -86,7 +91,7 @@ class ElasticSearchSetup:
         url = f"{self.es_host}/_index_template/{self.index_prefix}_template"
         
         try:
-            response = requests.put(url, json=template)
+            response = requests.put(url, json=template, auth=self.auth)
             response.raise_for_status()
             print(f"[+] Index template created: {self.index_prefix}_template")
             return True
@@ -200,7 +205,7 @@ class ElasticSearchSetup:
     def test_connection(self):
         """Test ElasticSearch connection"""
         try:
-            response = requests.get(self.es_host)
+            response = requests.get(self.es_host, auth=self.auth)
             response.raise_for_status()
             info = response.json()
             print(f"[+] Connected to ElasticSearch")

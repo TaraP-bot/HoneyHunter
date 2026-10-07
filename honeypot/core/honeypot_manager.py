@@ -13,6 +13,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 import hashlib
 import base64
+import os
 
 if __package__:
     from .sample_index import SampleIndexer, sample_document
@@ -76,7 +77,11 @@ class TelemetryCollector:
                 from elasticsearch import AsyncElasticsearch
                 # Use provided hosts or default to localhost
                 hosts = es_hosts if es_hosts else ['http://localhost:9200']
-                self.es_client = AsyncElasticsearch(hosts)
+                # Credentials come from the environment, never the config file
+                basic_auth = None
+                if os.environ.get('ES_USERNAME'):
+                    basic_auth = (os.environ['ES_USERNAME'], os.environ.get('ES_PASSWORD', ''))
+                self.es_client = AsyncElasticsearch(hosts, basic_auth=basic_auth)
                 self.sample_indexer = SampleIndexer(self.es_client)
                 logging.info(f"ElasticSearch client initialized with hosts: {hosts}")
             except ImportError:
