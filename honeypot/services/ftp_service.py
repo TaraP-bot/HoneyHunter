@@ -15,9 +15,10 @@ from honeypot_manager import HoneypotService, ProtocolEvent
 class FTPHoneypot(HoneypotService):
     """FTP honeypot - captures credentials and file operations"""
     
-    def __init__(self, port: int, telemetry):
+    def __init__(self, port: int, telemetry, banner: Optional[str] = None):
         super().__init__("FTP", port, telemetry)
-        
+        self.banner = banner or "(vsFTPd 3.0.3)"
+
         # Valid credentials for honeypot
         self.valid_users = {
             'anonymous': '',
@@ -52,7 +53,7 @@ class FTPHoneypot(HoneypotService):
         
         try:
             # Send welcome banner
-            await self._send_response(writer, 220, "FTP Server Ready")
+            await self._send_response(writer, 220, self.banner)
             
             # Log connection
             await self._log_connection(source_ip, source_port, session_id)
@@ -149,7 +150,7 @@ class FTPHoneypot(HoneypotService):
         
         if cmd == 'USER':
             self.current_user = arg
-            await self._send_response(writer, 331, f"User {arg} OK. Password required")
+            await self._send_response(writer, 331, "Please specify the password.")
             
         elif cmd == 'PASS':
             await self._handle_password(arg, writer, source_ip, session_id)
@@ -158,7 +159,11 @@ class FTPHoneypot(HoneypotService):
             await self._send_response(writer, 215, "UNIX Type: L8")
             
         elif cmd == 'PWD':
-            await self._send_response(writer, 257, '"/home/ftp" is current directory')
+            # vsftpd sends just the quoted path; anonymous users are chrooted
+            if self.current_user in ('anonymous', 'ftp'):
+                await self._send_response(writer, 257, '"/"')
+            else:
+                await self._send_response(writer, 257, f'"/home/{self.current_user}"')
             
         elif cmd == 'LIST' or cmd == 'NLST':
             await self._handle_list(writer, source_ip, session_id)
@@ -170,20 +175,25 @@ class FTPHoneypot(HoneypotService):
             await self._handle_upload(arg, reader, writer, source_ip, session_id)
             
         elif cmd == 'TYPE':
-            await self._send_response(writer, 200, f"Type set to {arg}")
+            if arg.upper().startswith('I'):
+                await self._send_response(writer, 200, "Switching to Binary mode.")
+            elif arg.upper().startswith('A'):
+                await self._send_response(writer, 200, "Switching to ASCII mode.")
+            else:
+                await self._send_response(writer, 500, "Unrecognised TYPE command.")
             
         elif cmd == 'PASV':
             # Passive mode (simplified - won't actually work)
-            await self._send_response(writer, 227, "Entering Passive Mode (127,0,0,1,195,149)")
+            await self._send_response(writer, 227, "Entering Passive Mode (127,0,0,1,195,149).")
             
         elif cmd == 'PORT':
-            await self._send_response(writer, 200, "PORT command successful")
+            await self._send_response(writer, 200, "PORT command successful. Consider using PASV.")
             
         elif cmd == 'QUIT':
-            await self._send_response(writer, 221, "Goodbye")
-            
+            await self._send_response(writer, 221, "Goodbye.")
+
         else:
-            await self._send_response(writer, 500, f"Unknown command: {cmd}")
+            await self._send_response(writer, 500, "Unknown command.")
     
     async def _handle_password(self, password: str, 
                                writer: asyncio.StreamWriter,
@@ -212,12 +222,12 @@ class FTPHoneypot(HoneypotService):
                self.current_user == 'anonymous':
                 self.authenticated = True
                 event.decoded_payload['success'] = True
-                await self._send_response(writer, 230, "Login successful")
+                await self._send_response(writer, 230, "Login successful.")
                 logging.warning(f"FTP login: {self.current_user}:{password} from {source_ip}")
             else:
-                await self._send_response(writer, 530, "Login incorrect")
+                await self._send_response(writer, 530, "Login incorrect.")
         else:
-            await self._send_response(writer, 530, "Login incorrect")
+            await self._send_response(writer, 530, "Login incorrect.")
         
         await self.telemetry.log_event(event)
     
@@ -225,11 +235,11 @@ class FTPHoneypot(HoneypotService):
                           source_ip: str, session_id: str):
         """Handle LIST command"""
         if not self.authenticated:
-            await self._send_response(writer, 530, "Please login first")
+            await self._send_response(writer, 530, "Please login with USER and PASS.")
             return
         
         # Send fake file listing
-        await self._send_response(writer, 150, "Opening ASCII mode data connection")
+        await self._send_response(writer, 150, "Here comes the directory listing.")
         
         listing = []
         for filename in self.fake_files:
@@ -240,8 +250,8 @@ class FTPHoneypot(HoneypotService):
         for line in listing:
             writer.write(f"{line}\r\n".encode())
         await writer.drain()
-        
-        await self._send_response(writer, 226, "Transfer complete")
+
+        await self._send_response(writer, 226, "Directory send OK.")
         
         # Log listing request
         event = ProtocolEvent(
@@ -263,7 +273,7 @@ class FTPHoneypot(HoneypotService):
                                source_ip: str, session_id: str):
         """Handle RETR (download) command"""
         if not self.authenticated:
-            await self._send_response(writer, 530, "Please login first")
+            await self._send_response(writer, 530, "Please login with USER and PASS.")
             return
         
         # Log download attempt
@@ -282,12 +292,15 @@ class FTPHoneypot(HoneypotService):
         await self.telemetry.log_event(event)
         
         if filename in self.fake_files:
-            await self._send_response(writer, 150, "Opening BINARY mode data connection")
+            # Size matches the 1024 bytes shown in the LIST output
+            await self._send_response(
+                writer, 150,
+                f"Opening BINARY mode data connection for {filename} (1024 bytes).")
             # Fake file transfer
             await asyncio.sleep(0.1)
-            await self._send_response(writer, 226, "Transfer complete")
+            await self._send_response(writer, 226, "Transfer complete.")
         else:
-            await self._send_response(writer, 550, f"{filename}: No such file")
+            await self._send_response(writer, 550, "Failed to open file.")
     
     async def _handle_upload(self, filename: str,
                             reader: asyncio.StreamReader,
@@ -295,11 +308,11 @@ class FTPHoneypot(HoneypotService):
                             source_ip: str, session_id: str):
         """Handle STOR (upload) command"""
         if not self.authenticated:
-            await self._send_response(writer, 530, "Please login first")
+            await self._send_response(writer, 530, "Please login with USER and PASS.")
             return
         
-        await self._send_response(writer, 150, "Opening BINARY mode data connection")
-        
+        await self._send_response(writer, 150, "Ok to send data.")
+
         # Try to capture uploaded data (simplified)
         try:
             # In real FTP, this comes over data connection
@@ -315,8 +328,8 @@ class FTPHoneypot(HoneypotService):
                 await self.telemetry.save_sample(data, source_ip, 'ftp_upload', metadata)
         except asyncio.TimeoutError:
             pass
-        
-        await self._send_response(writer, 226, "Transfer complete")
+
+        await self._send_response(writer, 226, "Transfer complete.")
         
         # Log upload
         event = ProtocolEvent(

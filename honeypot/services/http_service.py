@@ -109,9 +109,11 @@ class HTTPRequest:
 class HTTPHoneypot(HoneypotService):
     """HTTP/HTTPS honeypot service"""
     
-    def __init__(self, port: int, telemetry, ssl_cert: Optional[Path] = None):
+    def __init__(self, port: int, telemetry, ssl_cert: Optional[Path] = None,
+                 server_header: Optional[str] = None):
         super().__init__("HTTP", port, telemetry)
         self.ssl_cert = ssl_cert
+        self.server_header = server_header or "Apache/2.4.41 (Ubuntu)"
         
         # Response templates
         self.response_templates = {
@@ -370,7 +372,7 @@ class HTTPHoneypot(HoneypotService):
         response = f"HTTP/1.1 {status_code} {status_text}\r\n"
         response += f"Content-Type: {content_type}\r\n"
         response += f"Content-Length: {len(body)}\r\n"
-        response += "Server: Apache/2.4.41 (Ubuntu)\r\n"
+        response += f"Server: {self.server_header}\r\n"
         response += "Connection: close\r\n"
         response += "\r\n"
         response += body

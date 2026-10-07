@@ -23,12 +23,90 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.honeypot_manager import HoneypotService, ProtocolEvent
 
 
+# Fake host identity. Keep these consistent with each other and with the
+# ssh_version banner (OpenSSH 8.2p1-4ubuntu0.5, published 2022-04-02):
+# a focal box patched in July 2022 runs kernel 5.4.0-122.138 and still
+# reports 20.04.4, as 20.04.5 was released 2022-09-02.
+FAKE_HOSTNAME = "ubuntu"
+FAKE_OS_VERSION = "20.04.4"
+FAKE_KERNEL_RELEASE = "5.4.0-122-generic"
+FAKE_KERNEL_VERSION = "#138-Ubuntu SMP Wed Jun 22 15:00:31 UTC 2022"
+
+FAKE_MOTD = (
+    f"Welcome to Ubuntu {FAKE_OS_VERSION} LTS "
+    f"(GNU/Linux {FAKE_KERNEL_RELEASE} x86_64)\n"
+    "\n"
+    " * Documentation:  https://help.ubuntu.com\n"
+    " * Management:     https://landscape.canonical.com\n"
+    " * Support:        https://ubuntu.com/advantage\n"
+)
+
+FAKE_FILES = {
+    '/etc/os-release': (
+        'NAME="Ubuntu"\n'
+        f'VERSION="{FAKE_OS_VERSION} LTS (Focal Fossa)"\n'
+        'ID=ubuntu\n'
+        'ID_LIKE=debian\n'
+        f'PRETTY_NAME="Ubuntu {FAKE_OS_VERSION} LTS"\n'
+        'VERSION_ID="20.04"\n'
+        'HOME_URL="https://www.ubuntu.com/"\n'
+        'SUPPORT_URL="https://help.ubuntu.com/"\n'
+        'BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"\n'
+        'PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"\n'
+        'VERSION_CODENAME=focal\n'
+        'UBUNTU_CODENAME=focal'
+    ),
+    '/etc/issue': f'Ubuntu {FAKE_OS_VERSION} LTS \\n \\l\n',
+    '/etc/hostname': FAKE_HOSTNAME,
+}
+# lib/os-release is what /etc/os-release symlinks to
+FAKE_FILES['/usr/lib/os-release'] = FAKE_FILES['/etc/os-release']
+
+
+def fake_uname(args: list) -> str:
+    """Mimic GNU coreutils uname for the fake host"""
+    fields = [
+        ('s', 'Linux'),
+        ('n', FAKE_HOSTNAME),
+        ('r', FAKE_KERNEL_RELEASE),
+        ('v', FAKE_KERNEL_VERSION),
+        ('m', 'x86_64'),
+        ('p', 'x86_64'),
+        ('i', 'x86_64'),
+        ('o', 'GNU/Linux'),
+    ]
+    long_opts = {
+        '--all': 'a', '--kernel-name': 's', '--nodename': 'n',
+        '--kernel-release': 'r', '--kernel-version': 'v', '--machine': 'm',
+        '--processor': 'p', '--hardware-platform': 'i',
+        '--operating-system': 'o',
+    }
+    wanted = set()
+    for arg in args:
+        if arg in long_opts:
+            wanted.add(long_opts[arg])
+        elif arg.startswith('-') and not arg.startswith('--'):
+            for flag in arg[1:]:
+                if flag not in 'asnrvmpio':
+                    return (f"uname: invalid option -- '{flag}'\n"
+                            "Try 'uname --help' for more information.")
+                wanted.add(flag)
+        else:
+            return (f"uname: extra operand '{arg}'\n"
+                    "Try 'uname --help' for more information.")
+    if 'a' in wanted:
+        wanted = set('snrvmpio')
+    if not wanted:
+        wanted = {'s'}
+    return ' '.join(value for flag, value in fields if flag in wanted)
+
+
 class SSHHoneypot(HoneypotService):
     """SSH honeypot - captures credentials and commands"""
     
-    def __init__(self, port: int, telemetry):
+    def __init__(self, port: int, telemetry, ssh_version: Optional[str] = None):
         super().__init__("SSH", port, telemetry)
-        
+
         # Common credential pairs to "accept"
         self.fake_credentials = {
             'root': ['root', 'password', 'toor', '123456', 'admin', ''],
@@ -39,8 +117,10 @@ class SSHHoneypot(HoneypotService):
             'test': ['test', ''],
         }
         
-        # SSH software version (asyncssh adds the "SSH-2.0-" prefix itself)
-        self.ssh_version = "OpenSSH_8.2p1 Ubuntu-4ubuntu0.5"
+        # SSH software version (asyncssh adds the "SSH-2.0-" prefix itself,
+        # so drop one if the config includes it)
+        ssh_version = ssh_version or "OpenSSH_8.2p1 Ubuntu-4ubuntu0.5"
+        self.ssh_version = ssh_version.removeprefix("SSH-2.0-")
         
     async def start(self):
         """Start SSH honeypot server"""
@@ -263,8 +343,8 @@ class SSHSessionHandler(asyncssh.SSHServerSession):
     
     def session_started(self):
         """Send welcome message and prompt"""
-        self._chan.write('\r\nWelcome to Ubuntu 20.04.3 LTS\r\n')
-        self._chan.write('root@ubuntu:~# ')
+        self._chan.write(FAKE_MOTD.replace('\n', '\r\n') + '\r\n')
+        self._chan.write(f'root@{FAKE_HOSTNAME}:~# ')
     
     def data_received(self, data, datatype):
         """Handle received data"""
@@ -287,20 +367,51 @@ class SSHSessionHandler(asyncssh.SSHServerSession):
                 # Send fake response
                 response = self._get_command_response(command)
                 if response:
+                    # Terminals need CRLF; bare LF staircases the output
+                    response = response.replace('\n', '\r\n')
                     self._chan.write(f'\r\n{response}\r\n')
                 else:
                     self._chan.write('\r\n')
             
             # Send new prompt
-            self._chan.write('root@ubuntu:~# ')
+            self._chan.write(f'root@{FAKE_HOSTNAME}:~# ')
     
     def _get_command_response(self, command: str) -> str:
         """Get fake response for command"""
+        parts = command.split()
+        name, args = parts[0], parts[1:]
+
+        # Host identity commands: bots run these first to fingerprint
+        if name == 'uname':
+            return fake_uname(args)
+        if name == 'hostname' and not args:
+            return FAKE_HOSTNAME
+        if name == 'lsb_release':
+            lsb = {
+                'i': 'Distributor ID:\tUbuntu',
+                'd': f'Description:\tUbuntu {FAKE_OS_VERSION} LTS',
+                'r': 'Release:\t20.04',
+                'c': 'Codename:\tfocal',
+            }
+            flags = set(''.join(a.lstrip('-') for a in args)) or {'v'}
+            if 'a' in flags:
+                flags = set('idrc')
+            lines = ['No LSB modules are available.']
+            lines += [line for flag, line in lsb.items() if flag in flags]
+            return '\n'.join(lines)
+        if name == 'cat':
+            out = []
+            for path in args:
+                if path in FAKE_FILES:
+                    out.append(FAKE_FILES[path].rstrip('\n'))
+                else:
+                    out.append(f'cat: {path}: No such file or directory')
+            return '\n'.join(out)
+
         responses = {
             'whoami': 'root',
             'pwd': '/root',
             'id': 'uid=0(root) gid=0(root) groups=0(root)',
-            'uname -a': 'Linux ubuntu 5.4.0-42-generic #46-Ubuntu SMP x86_64 GNU/Linux',
             'ls': 'Desktop  Documents  Downloads',
             'ls -la': 'total 32\ndrwxr-xr-x 5 root root 4096 Jan 15 10:30 .\ndrwxr-xr-x 3 root root 4096 Jan 15 10:28 ..',
         }
@@ -315,12 +426,10 @@ class SSHSessionHandler(asyncssh.SSHServerSession):
                 return response
         
         # Default
-        if command.startswith('cat '):
-            return 'cat: permission denied'
-        elif command.startswith('cd '):
+        if command.startswith('cd '):
             return ''
         else:
-            return f'{command}: command not found'
+            return f'{name}: command not found'
     
     def eof_received(self):
         """Handle EOF"""

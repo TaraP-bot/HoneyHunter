@@ -58,12 +58,15 @@ class INetSimHoneypot:
         """Initialize all honeypot services"""
         config = self.manager.config
         telemetry = self.manager.telemetry
-        
+        # Banners and version strings; services fall back to their defaults
+        templates = config.get('response_templates', {})
+
         # HTTP
         if config['services']['http']['enabled']:
             http = HTTPHoneypot(
                 port=config['services']['http']['port'],
-                telemetry=telemetry
+                telemetry=telemetry,
+                server_header=templates.get('http_server')
             )
             self.manager.register_service(http)
         
@@ -72,7 +75,8 @@ class INetSimHoneypot:
             https = HTTPHoneypot(
                 port=config['services']['https']['port'],
                 telemetry=telemetry,
-                ssl_cert=Path(config['services']['https'].get('cert', ''))
+                ssl_cert=Path(config['services']['https'].get('cert', '')),
+                server_header=templates.get('http_server')
             )
             self.manager.register_service(https)
         
@@ -80,7 +84,8 @@ class INetSimHoneypot:
         if config['services']['ssh']['enabled']:
             ssh = SSHHoneypot(
                 port=config['services']['ssh']['port'],
-                telemetry=telemetry
+                telemetry=telemetry,
+                ssh_version=templates.get('ssh_version')
             )
             self.manager.register_service(ssh)
         
@@ -88,7 +93,8 @@ class INetSimHoneypot:
         if config['services']['ftp']['enabled']:
             ftp = FTPHoneypot(
                 port=config['services']['ftp']['port'],
-                telemetry=telemetry
+                telemetry=telemetry,
+                banner=templates.get('ftp_banner')
             )
             self.manager.register_service(ftp)
         
@@ -191,7 +197,7 @@ def create_default_config(path: Path):
         "response_templates": {
             "http_server": "Apache/2.4.41 (Ubuntu)",
             "ssh_version": "OpenSSH_8.2p1 Ubuntu-4ubuntu0.5",
-            "ftp_banner": "FTP Server Ready"
+            "ftp_banner": "(vsFTPd 3.0.3)"
         },
         "detection": {
             "log_all_connections": True,

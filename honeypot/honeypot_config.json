@@ -43,7 +43,7 @@
   "response_templates": {
     "http_server": "Apache/2.4.41 (Ubuntu)",
     "ssh_version": "OpenSSH_8.2p1 Ubuntu-4ubuntu0.5",
-    "ftp_banner": "FTP Server Ready"
+    "ftp_banner": "(vsFTPd 3.0.3)"
   },
   "detection": {
     "log_all_connections": true,
