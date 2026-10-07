@@ -8,9 +8,9 @@ services:
     ports:
       # Map standard ports to honeypot ports
       - "80:8080"      # HTTP
-      - "2222:2222"      # SSH
+      - "22:2222"      # SSH
       - "21:2121"      # FTP
-      - "5353:5353/tcp"  # DNS
+      - "53:5353/tcp"  # DNS
     volumes:
       # Persistent data storage
       - ./honeypot_data:/app/honeypot_data
@@ -44,7 +44,7 @@ services:
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     networks:
       - honeypot_net
     restart: unless-stopped
@@ -56,7 +56,7 @@ services:
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
     ports:
-      - "5601:5601"
+      - "127.0.0.1:5601:5601"
     networks:
       - honeypot_net
     depends_on:

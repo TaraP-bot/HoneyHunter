@@ -1,0 +1,215 @@
+# =====================================================================
+# HoneyHunter .gitignore
+# Default stance: secrets, captured attacker data and anything that
+# identifies the operator or the sensor never reach the repo.
+# If you really need to commit something matched here, use `git add -f`
+# and think twice.
+# =====================================================================
+
+# ---------------------------------------------------------------------
+# SSH keys and host keys
+# ---------------------------------------------------------------------
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+*_rsa
+*_dsa
+*_ecdsa
+*_ed25519
+*.pub
+ssh_host_*
+*host_key*
+known_hosts*
+authorized_keys*
+# Stray keypairs dropped in the working tree
+puppy
+puppy.pub
+
+# ---------------------------------------------------------------------
+# TLS / PKI / crypto material
+# ---------------------------------------------------------------------
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.csr
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.truststore
+*.gpg
+*.asc
+*.kdbx
+*.ovpn
+*.age
+secring.*
+
+# ---------------------------------------------------------------------
+# Credentials, tokens, environment files
+# ---------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.env
+.envrc
+*.secret
+*.secrets
+secrets/
+secret*.json
+secret*.yml
+secret*.yaml
+credentials*
+*credentials*.json
+*token*
+!*token*.py
+*.auth
+ts.key
+tailscale*.key
+.netrc
+.htpasswd
+.pgpass
+.my.cnf
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+
+# Cloud CLI config (DigitalOcean, AWS, GCP, Azure)
+.config/doctl/
+doctl.yaml
+.aws/
+.gcloud/
+.azure/
+*service-account*.json
+
+# Local overrides of the honeypot config (put real values here, not in
+# honeypot_config.json)
+*_config.local.json
+*.local.json
+docker-compose.override.yml
+docker-compose.*.local.yml
+
+# ---------------------------------------------------------------------
+# Captured attacker data: never commit
+# Samples can be live malware; telemetry holds attacker IPs, creds tried,
+# and the sensor's own IP. Publishing it burns the sensor and may breach
+# GitHub's malware policy.
+# ---------------------------------------------------------------------
+honeypot_data/
+**/honeypot_data/
+samples/
+captures/
+uploads/
+quarantine/
+malware/
+payloads/
+loot/
+dumps/
+*.pcap
+*.pcapng
+*.cap
+*.dmp
+*.mem
+*.vmem
+*.bin
+*.elf
+*.exe
+*.dll
+*.so
+*.msi
+*.apk
+*.jar
+!**/gradle-wrapper.jar
+*.sample
+*.malware
+*.infected
+*.quarantine
+# Archives are usually exported samples or data dumps
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.xz
+*.bz2
+
+# Telemetry, logs and databases
+*.log
+*.log.*
+logs/
+*.jsonl
+*.ndjson
+*.sqlite
+*.sqlite3
+*.db
+*.sql
+!**/schema*.sql
+elasticsearch_data/
+esdata/
+kibana_data/
+*.csv
+reports/
+
+# Installer / deploy output
+install.log
+nohup.out
+
+# ---------------------------------------------------------------------
+# Notes that tend to hold IPs, tailnet names, or investigation details
+# ---------------------------------------------------------------------
+NOTES*.md
+notes/
+scratch/
+private/
+*.private.*
+
+# ---------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------------
+# OS / editor cruft (.DS_Store leaks local file names and paths)
+# ---------------------------------------------------------------------
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+*:Zone.Identifier
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.history/
+
+# ---------------------------------------------------------------------
+# Claude Code local state
+# ---------------------------------------------------------------------
+.claude/settings.local.json
