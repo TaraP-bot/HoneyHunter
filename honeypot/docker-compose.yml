@@ -6,11 +6,14 @@ services:
     container_name: honeypot
     restart: unless-stopped
     ports:
-      # Map standard ports to honeypot ports
-      - "80:8080"      # HTTP
-      - "22:2222"      # SSH
-      - "21:2121"      # FTP
-      - "53:5353/tcp"  # DNS
+      # Map standard ports to honeypot ports.
+      # Set HONEYPOT_BIND_IP in .env (gitignored) to the public IP when sshd
+      # listens on a specific address (e.g. Tailscale) on port 22: Linux
+      # refuses a 0.0.0.0:22 bind alongside it.
+      - "${HONEYPOT_BIND_IP:-0.0.0.0}:80:8080"      # HTTP
+      - "${HONEYPOT_BIND_IP:-0.0.0.0}:22:2222"      # SSH
+      - "${HONEYPOT_BIND_IP:-0.0.0.0}:21:2121"      # FTP
+      - "${HONEYPOT_BIND_IP:-0.0.0.0}:53:5353/tcp"  # DNS
     volumes:
       # Persistent data storage
       - ./honeypot_data:/app/honeypot_data
