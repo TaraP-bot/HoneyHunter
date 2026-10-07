@@ -275,6 +275,29 @@ class SSHHoneypot(HoneypotService):
         await self.telemetry.log_event(event)
         logging.info(f"SSH command from {source_ip}: {command}")
 
+    async def log_request(self, request: str, value: str, source_ip: str,
+                          session_id: str):
+        """Log a rejected SSH request (exec, subsystem, direct-tcpip) so
+        what the client tried is recorded even though it is not served"""
+        event = ProtocolEvent(
+            timestamp=datetime.utcnow().isoformat(),
+            event_type='ssh_request',
+            source_ip=source_ip,
+            source_port=0,
+            dest_port=self.port,
+            protocol='ssh',
+            service=self.name,
+            session_id=session_id,
+            decoded_payload={
+                'request': request,
+                'value': value,
+                'accepted': False
+            }
+        )
+
+        await self.telemetry.log_event(event)
+        logging.info(f"SSH {request} request from {source_ip}: {value}")
+
 
 class SSHServerProtocol(asyncssh.SSHServer):
     """asyncssh server protocol handler"""
@@ -319,6 +342,14 @@ class SSHServerProtocol(asyncssh.SSHServer):
         
         return False
     
+    def connection_requested(self, dest_host, dest_port, orig_host, orig_port):
+        """Log port-forwarding attempts (ssh -L / proxying); still rejected"""
+        asyncio.create_task(self.honeypot.log_request(
+            'direct-tcpip', f'{dest_host}:{dest_port}',
+            self.source_ip, self.session_id
+        ))
+        return False
+
     def session_requested(self):
         """Create session after successful authentication"""
         return SSHSessionHandler(self.honeypot, self.source_ip, self.session_id)
@@ -337,6 +368,20 @@ class SSHSessionHandler(asyncssh.SSHServerSession):
         """Session started"""
         self._chan = chan
     
+    def exec_requested(self, command):
+        """Log a command sent without a shell (ssh host 'cmd'); still rejected"""
+        asyncio.create_task(self.honeypot.log_request(
+            'exec', command, self.source_ip, self.session_id
+        ))
+        return False
+
+    def subsystem_requested(self, subsystem):
+        """Log subsystem requests such as sftp; still rejected"""
+        asyncio.create_task(self.honeypot.log_request(
+            'subsystem', subsystem, self.source_ip, self.session_id
+        ))
+        return False
+
     def shell_requested(self):
         """Shell requested"""
         return True

@@ -29,6 +29,8 @@ services:
       # Least-privilege ES user created by es-setup; passwords live in .env
       - ES_USERNAME=honeypot_writer
       - ES_PASSWORD=${HONEYPOT_ES_PASSWORD:?Set HONEYPOT_ES_PASSWORD in .env}
+      # Sensor's own address, excluded from analysis (tests run from it)
+      - PUBLIC_IP=${HONEYPOT_BIND_IP:-}
     # Security options
     security_opt:
       - no-new-privileges:true

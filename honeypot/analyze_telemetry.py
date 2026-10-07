@@ -6,6 +6,7 @@ Analyze captured telemetry for patterns, IoCs, and threat intelligence
 
 import json
 import logging
+import os
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict, Counter
@@ -16,8 +17,10 @@ import hashlib
 class TelemetryAnalyzer:
     """Analyze honeypot telemetry data"""
     
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, exclude_ips=()):
         self.data_dir = Path(data_dir)
+        # The sensor's own address (tests run from it) plus anything passed in
+        self.exclude_ips = {ip for ip in (os.environ.get('PUBLIC_IP'), *exclude_ips) if ip}
         self.events_file = self.data_dir / "events.jsonl"
         self.samples_dir = self.data_dir / "samples"
         
@@ -36,6 +39,8 @@ class TelemetryAnalyzer:
             for line in f:
                 try:
                     event = json.loads(line)
+                    if event.get('source_ip') in self.exclude_ips:
+                        continue
                     event_time = datetime.fromisoformat(event['timestamp'])
                     
                     if event_time >= cutoff:
@@ -399,12 +404,15 @@ def main():
     parser.add_argument('--hours', type=int, default=24, 
                        help='Hours of data to analyze (default: 24)')
     parser.add_argument('--output', type=Path, help='Output report file')
+    parser.add_argument('--exclude', action='append', default=[], metavar='IP',
+                       help='Ignore events from this source IP (repeatable); '
+                            'the PUBLIC_IP environment variable is always excluded')
     
     args = parser.parse_args()
     
     logging.basicConfig(level=logging.INFO)
     
-    analyzer = TelemetryAnalyzer(args.data_dir)
+    analyzer = TelemetryAnalyzer(args.data_dir, args.exclude)
     analyzer.load_events(hours=args.hours)
     
     report = analyzer.generate_report(output_file=args.output)
