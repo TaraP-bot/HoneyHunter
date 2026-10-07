@@ -77,7 +77,8 @@ class SampleIndexer:
             await self.client.indices.put_index_template(
                 name='honeypot_samples_template', index_patterns=[SAMPLE_INDEX],
                 priority=500,
-                template={'mappings': MAPPINGS, 'settings': {'number_of_shards': 1}},
+                template={'mappings': MAPPINGS,
+                          'settings': {'number_of_shards': 1, 'number_of_replicas': 0}},
             )
             if not await self.client.indices.exists(index=SAMPLE_INDEX):
                 try:

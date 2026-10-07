@@ -48,5 +48,25 @@ es PUT /_security/user/honeypot_writer <<EOF
 {"password": "$HONEYPOT_ES_PASSWORD", "roles": ["honeypot_writer"]}
 EOF
 
+# Single node: replicas can never be assigned and leave the cluster yellow.
+# Install a minimal honeypot-* template only if none exists, so the fuller
+# one from setup_elasticsearch.py (same name, also 0 replicas) wins if used.
+echo "Ensuring honeypot-* indices have no replicas"
+status=$(curl -sS -K /tmp/es-auth -H 'Content-Type: application/json' \
+    -X PUT "$ES/_index_template/honeypot_template?create=true" \
+    --data-binary @- -o /dev/null -w '%{http_code}' <<'EOF'
+{"index_patterns": ["honeypot-*"],
+ "template": {"settings": {"number_of_shards": 1, "number_of_replicas": 0}}}
+EOF
+)
+case "$status" in
+    200) echo "  created honeypot_template" ;;
+    400) echo "  honeypot_template already exists, leaving it" ;;
+    *)   echo "  unexpected HTTP $status creating honeypot_template" >&2; exit 1 ;;
+esac
+es PUT "/honeypot-*/_settings" <<'EOF'
+{"index": {"number_of_replicas": 0}}
+EOF
+
 rm -f /tmp/es-auth
 echo "Elasticsearch security setup complete"

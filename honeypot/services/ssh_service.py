@@ -54,17 +54,21 @@ class SSHHoneypot(HoneypotService):
         logging.info(f"Starting {self.name} honeypot on port {self.port} (asyncssh mode)")
         
         try:
-            # Generate host key if needed
-            if not os.path.exists('/tmp/ssh_host_key'):
+            # Generate host key if needed. Keep it in the persistent data dir:
+            # a key that changes on every restart is a honeypot tell for
+            # scanners that track host keys over time
+            host_key = str(self.telemetry.output_dir / 'ssh_host_key')
+            if not os.path.exists(host_key):
                 key = asyncssh.generate_private_key('ssh-rsa')
-                key.write_private_key('/tmp/ssh_host_key')
-            
+                key.write_private_key(host_key)
+                os.chmod(host_key, 0o600)
+
             # Start SSH server
             await asyncssh.create_server(
                 lambda: SSHServerProtocol(self),
                 '',
                 self.port,
-                server_host_keys=['/tmp/ssh_host_key'],
+                server_host_keys=[host_key],
                 server_version=self.ssh_version,
             )
             
