@@ -13,6 +13,17 @@ from typing import List, Tuple, Dict, Any
 from honeypot_manager import HoneypotService, ProtocolEvent
 
 
+async def _read_exact(reader, n: int):
+    """Read exactly n bytes, or return None if the peer closes first"""
+    data = b''
+    while len(data) < n:
+        chunk = await reader.read(n - len(data))
+        if not chunk:
+            return None
+        data += chunk
+    return data
+
+
 class DNSQuery:
     """Parse DNS query packet"""
     
@@ -124,9 +135,18 @@ class DNSHoneypot(HoneypotService):
         reader, writer = self.capture_streams(reader, writer, session_id)
         
         try:
-            # Read DNS query
-            data = await asyncio.wait_for(reader.read(512), timeout=5.0)
-            if not data:
+            # DNS over TCP prefixes every message with a 2-byte length
+            # (RFC 1035 4.2.2). Reading raw bytes as a query misparsed every
+            # request; non-DNS probes on port 53 are still captured as
+            # tcp_data by the stream capture, just not logged as queries.
+            prefix = await asyncio.wait_for(_read_exact(reader, 2), timeout=5.0)
+            if prefix is None:
+                return
+            length = struct.unpack('!H', prefix)[0]
+            if length < 12:  # shorter than a DNS header
+                return
+            data = await asyncio.wait_for(_read_exact(reader, length), timeout=5.0)
+            if data is None:
                 return
             
             # Parse query
@@ -145,7 +165,7 @@ class DNSHoneypot(HoneypotService):
             
             # Send response
             response = self._build_response(query)
-            writer.write(response)
+            writer.write(struct.pack('!H', len(response)) + response)
             await writer.drain()
             
         except asyncio.TimeoutError:

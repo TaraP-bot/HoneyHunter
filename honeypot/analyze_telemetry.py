@@ -4,9 +4,11 @@ Honeypot Telemetry Analysis
 Analyze captured telemetry for patterns, IoCs, and threat intelligence
 """
 
+import csv
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict, Counter
@@ -436,6 +438,24 @@ class TelemetryAnalyzer:
         return report_text
 
 
+def write_samples_csv(analyzer: TelemetryAnalyzer, out):
+    """Captured samples as CSV, with the same names and blocking notes as
+    the report"""
+    def cell(value):
+        # Attacker-controlled text must not run as a spreadsheet formula
+        value = '' if value is None else str(value)
+        return "'" + value if value[:1] in ('=', '+', '-', '@', '\t', '\r') else value
+    
+    columns = ['sha256', 'name', 'artifact_kind', 'size', 'content_type',
+               'capture_status', 'source_ip', 'timestamp', 'user_agent', 'note']
+    writer = csv.writer(out)
+    writer.writerow(columns)
+    for sample in analyzer.get_malware_samples():
+        row = dict(sample, name=analyzer.sample_name(sample),
+                   note='too generic to block by hash' if sample.get('size', 0) < SMALL_SAMPLE else '')
+        writer.writerow([cell(row.get(c)) for c in columns])
+
+
 def main():
     """Generate analysis report"""
     import argparse
@@ -448,12 +468,17 @@ def main():
     parser.add_argument('--exclude', action='append', default=[], metavar='IP',
                        help='Ignore events from this source IP (repeatable); '
                             'the PUBLIC_IP environment variable is always excluded')
+    parser.add_argument('--samples-csv', action='store_true',
+                       help='Print all captured samples as CSV instead of the report')
     
     args = parser.parse_args()
     
     logging.basicConfig(level=logging.INFO)
     
     analyzer = TelemetryAnalyzer(args.data_dir, args.exclude)
+    if args.samples_csv:
+        write_samples_csv(analyzer, sys.stdout)
+        return
     analyzer.load_events(hours=args.hours)
     
     report = analyzer.generate_report(output_file=args.output)

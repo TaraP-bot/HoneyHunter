@@ -235,7 +235,50 @@ def objects(sensor_ip: str) -> list:
         'attributes': {'title': 'honeypot-2*', 'name': 'Honeypot events',
                        'timeFieldName': 'timestamp'},
     }
-    return [data_view, *visualizations, notable, dashboard]
+    return [data_view, *visualizations, notable, dashboard, *export_objects(sensor_ip)]
+
+
+def export_objects(sensor_ip: str) -> list:
+    """Views meant for exporting to CSV, outside the dashboard. They exclude
+    the sensor itself in their own query so they are clean when opened
+    directly."""
+    exclude = f' and not source_ip.keyword : "{sensor_ip}"' if sensor_ip else ''
+
+    logins_query = ('event_type.keyword : ("ssh_login_attempt" or "ftp_login_attempt") '
+                    'and decoded_payload.success : true' + exclude)
+    logins = {
+        'type': 'search', 'id': 'hp-export-logins',
+        'attributes': {
+            'title': 'Honeypot export: successful logins',
+            'description': 'One row per successful login. Discover > Share > '
+                           'CSV Reports > Generate CSV',
+            'columns': ['source_ip', 'source_geo.country_iso_code',
+                        'source_geo.country_name', 'source_as.asn',
+                        'source_as.organization_name', 'event_type',
+                        'decoded_payload.username', 'decoded_payload.password'],
+            'sort': [['timestamp', 'desc']],
+            'kibanaSavedObjectMeta': search_source(logins_query),
+        },
+        'references': [{'name': INDEX_REF, 'type': 'index-pattern', 'id': DATA_VIEW}],
+    }
+
+    def metric(agg_id, agg_type, field, label):
+        return {'id': agg_id, 'enabled': True, 'type': agg_type, 'schema': 'metric',
+                'params': {'field': field, 'customLabel': label}}
+
+    attacker_ips = visualization(
+        'hp-export-ips', 'Honeypot export: unique attacker IPs', 'table',
+        {**TABLE, 'perPage': 50},
+        [count_agg(),
+         metric('5', 'min', 'timestamp', 'First seen'),
+         metric('6', 'max', 'timestamp', 'Last seen'),
+         metric('7', 'cardinality', 'service.keyword', 'Services'),
+         terms_agg('2', 'source_ip.keyword', 2000, label='Source IP'),
+         terms_agg('3', 'source_geo.country_iso_code.keyword', 1, label='Country'),
+         terms_agg('4', 'source_as.organization_name.keyword', 1, label='Network'),
+         terms_agg('8', 'source_as.asn', 1, label='ASN')],
+        NOT_NOISE + exclude)
+    return [logins, attacker_ips]
 
 
 def main():
