@@ -1,0 +1,12 @@
+# Mounted over the Kibana image's default config (same defaults, plus the
+# Elasticsearch login).
+#
+# The kibana_system password is read from KIBANA_ES_PASSWORD, not
+# ELASTICSEARCH_PASSWORD: the image turns ELASTICSEARCH_* variables into
+# command-line flags, which anyone running ps on the host can see.
+server.host: "0.0.0.0"
+server.shutdownTimeout: "5s"
+elasticsearch.hosts: ["http://elasticsearch:9200"]
+elasticsearch.username: "kibana_system"
+elasticsearch.password: "${KIBANA_ES_PASSWORD}"
+monitoring.ui.container.elasticsearch.enabled: true

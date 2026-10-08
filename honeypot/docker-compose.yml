@@ -83,9 +83,11 @@ services:
     image: docker.elastic.co/kibana/kibana:8.11.0
     container_name: honeypot_kibana
     environment:
-      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-      - ELASTICSEARCH_USERNAME=kibana_system
-      - ELASTICSEARCH_PASSWORD=${KIBANA_SYSTEM_PASSWORD:?Set KIBANA_SYSTEM_PASSWORD in .env}
+      # Read by kibana.yml. Not ELASTICSEARCH_PASSWORD: the image would turn
+      # that into a command-line flag, visible in ps on the host
+      - KIBANA_ES_PASSWORD=${KIBANA_SYSTEM_PASSWORD:?Set KIBANA_SYSTEM_PASSWORD in .env}
+    volumes:
+      - ./kibana.yml:/usr/share/kibana/config/kibana.yml:ro
     ports:
       - "127.0.0.1:5601:5601"
     networks:
