@@ -42,6 +42,7 @@ EXPOSE 8080/tcp
 EXPOSE 2222/tcp
 EXPOSE 2121/tcp
 EXPOSE 5353/tcp
+EXPOSE 40000-40009/tcp
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

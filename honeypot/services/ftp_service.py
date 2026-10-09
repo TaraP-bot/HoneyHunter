@@ -23,7 +23,61 @@ HELP_LINES = [
     'RNTO SITE SIZE SMNT STAT STOR STOU STRU SYST TYPE USER XCUP XCWD XMKD',
     'XPWD XRMD',
 ]
-FILE_MTIME = '20260101120000'  # matches "Jan 01 12:00" in the LIST output
+FILE_MTIME = '20260101120000'  # matches "Jan 01  2026" in the LIST output
+FILE_SIZE = 1024                # matches the LIST output
+DATA_TIMEOUT = 60.0             # vsftpd's accept_timeout
+MAX_UPLOAD = 10 * 1024 * 1024   # stop reading an upload past this
+
+
+def pasv_ports() -> list:
+    """Passive data ports, e.g. FTP_PASV_PORTS=40000-40009; must be published"""
+    first, _, last = os.environ.get('FTP_PASV_PORTS', '40000-40009').partition('-')
+    return list(range(int(first), int(last or first) + 1))
+
+
+class PassiveListener:
+    """One-shot passive-mode listener that accepts only the control client's IP,
+    as vsftpd does with pasv_promiscuous=NO"""
+
+    def __init__(self, client_ip: str):
+        self.client_ip = client_ip
+        self.server = None
+        self.port = None
+        self.conn = asyncio.get_running_loop().create_future()
+
+    async def open(self, ports: list) -> bool:
+        for port in random.sample(ports, len(ports)):
+            try:
+                self.server = await asyncio.start_server(self._accept, '0.0.0.0', port)
+            except OSError:
+                continue  # in use by another session
+            self.port = self.server.sockets[0].getsockname()[1]
+            return True
+        return False
+
+    async def _accept(self, reader, writer):
+        peer = (writer.get_extra_info('peername') or ('',))[0]
+        if peer != self.client_ip or self.conn.done():
+            writer.close()
+            return
+        self.conn.set_result((reader, writer))
+
+    async def wait(self, timeout: float):
+        try:
+            return await asyncio.wait_for(asyncio.shield(self.conn), timeout)
+        except asyncio.TimeoutError:
+            return None
+
+    def close(self):
+        if self.server:
+            self.server.close()
+        if not self.conn.done():
+            self.conn.cancel()
+
+
+def fake_content(filename: str) -> bytes:
+    """Stable FILE_SIZE bytes per file name"""
+    return random.Random(filename).randbytes(FILE_SIZE)
 
 
 @dataclass
@@ -33,6 +87,8 @@ class FTPSession:
     user: Optional[str] = None
     authenticated: bool = False
     binary: bool = False
+    pasv: Optional[PassiveListener] = None
+    active: bool = False  # PORT/EPRT accepted; never connected to
 
 
 class FTPHoneypot(HoneypotService):
@@ -62,6 +118,7 @@ class FTPHoneypot(HoneypotService):
         # Address advertised in PASV replies; never the container's own IP
         self.public_ip = os.environ.get('PUBLIC_IP') or '127.0.0.1'
         self.version = self.banner.strip('()')
+        self.pasv_ports = pasv_ports()
     
     async def handle_client(self, reader: asyncio.StreamReader, 
                            writer: asyncio.StreamWriter):
@@ -103,6 +160,8 @@ class FTPHoneypot(HoneypotService):
         except Exception as e:
             logging.error(f"Error handling FTP client: {e}")
         finally:
+            if sess.pasv:
+                sess.pasv.close()
             try:
                 writer.close()
                 await writer.wait_closed()
@@ -246,10 +305,10 @@ class FTPHoneypot(HoneypotService):
             await self._send_multiline(writer, 213, "Status follows:",
                                        self._listing(), "End of status")
         elif cmd in ('LIST', 'NLST'):
-            await self._handle_list(writer, sess, session_id)
+            await self._handle_list(writer, sess, session_id, names_only=cmd == 'NLST')
         elif cmd == 'SIZE':
             if arg.lstrip('/') in self.fake_files:
-                await self._send_response(writer, 213, "1024")
+                await self._send_response(writer, 213, str(FILE_SIZE))
             else:
                 await self._send_response(writer, 550, "Could not get file size.")
         elif cmd == 'MDTM':
@@ -290,19 +349,28 @@ class FTPHoneypot(HoneypotService):
             await self._send_response(writer, 225, "No transfer to ABOR.")
         elif cmd == 'ALLO':
             await self._send_response(writer, 202, "ALLO command ignored.")
-        elif cmd == 'PASV':
-            # The data port is never opened; clients time out on it
-            port = random.randint(40000, 50000)
-            address = ','.join(self.public_ip.split('.'))
-            await self._send_response(
-                writer, 227, f"Entering Passive Mode ({address},{port >> 8},{port & 255}).")
-        elif cmd == 'EPSV':
-            port = random.randint(40000, 50000)
-            await self._send_response(writer, 229, f"Entering Extended Passive Mode (|||{port}|)")
-        elif cmd == 'PORT':
-            await self._send_response(writer, 200, "PORT command successful. Consider using PASV.")
-        elif cmd == 'EPRT':
-            await self._send_response(writer, 200, "EPRT command successful. Consider using EPSV.")
+        elif cmd in ('PASV', 'EPSV'):
+            port = await self._passive(sess)
+            if port is None:
+                await self._send_response(writer, 425, "Could not listen for passive connection.")
+            elif cmd == 'PASV':
+                address = ','.join(self.public_ip.split('.'))
+                await self._send_response(
+                    writer, 227, f"Entering Passive Mode ({address},{port >> 8},{port & 255}).")
+            else:
+                await self._send_response(writer, 229, f"Entering Extended Passive Mode (|||{port}|)")
+        elif cmd in ('PORT', 'EPRT'):
+            # Only the client's own address is accepted (vsftpd port_promiscuous=NO),
+            # and the sensor never connects out, so it can't be used to bounce
+            if self._active_ip(cmd, arg) != sess.source_ip:
+                await self._send_response(writer, 500, f"Illegal {cmd} command.")
+            else:
+                if sess.pasv:
+                    sess.pasv.close()
+                    sess.pasv = None
+                sess.active = True
+                alt = 'PASV' if cmd == 'PORT' else 'EPSV'
+                await self._send_response(writer, 200, f"{cmd} command successful. Consider using {alt}.")
         else:
             await self._send_response(writer, 500, "Unknown command.")
         return True
@@ -343,25 +411,75 @@ class FTPHoneypot(HoneypotService):
         
         await self.telemetry.log_event(event)
     
+    async def _passive(self, sess: FTPSession) -> Optional[int]:
+        """Open a passive listener, replacing any earlier one"""
+        if sess.pasv:
+            sess.pasv.close()
+        sess.active = False
+        sess.pasv = PassiveListener(sess.source_ip)
+        if await sess.pasv.open(self.pasv_ports):
+            return sess.pasv.port
+        sess.pasv = None
+        return None
+
+    @staticmethod
+    def _active_ip(cmd: str, arg: str) -> Optional[str]:
+        """Address from "PORT h1,h2,h3,h4,p1,p2" or "EPRT |1|h|p|" """
+        if cmd == 'PORT':
+            parts = arg.split(',')
+            return '.'.join(parts[:4]) if len(parts) == 6 else None
+        parts = arg.split(arg[:1]) if arg else []
+        return parts[2] if len(parts) == 5 and parts[1] == '1' else None
+
+    async def _data_connection(self, writer: asyncio.StreamWriter,
+                               sess: FTPSession, session_id: str):
+        """The client's data connection, or None after replying 425. Like
+        vsftpd, each PASV/PORT covers one transfer."""
+        listener, sess.pasv = sess.pasv, None
+        if listener is None:
+            if sess.active:
+                sess.active = False
+                await self._send_response(writer, 425, "Failed to establish connection.")
+            else:
+                await self._send_response(writer, 425, "Use PORT or PASV first.")
+            return None
+        try:
+            conn = await listener.wait(DATA_TIMEOUT)
+        finally:
+            listener.close()
+        if conn is None:
+            await self._send_response(writer, 425, "Failed to establish connection.")
+            return None
+        return self.capture_streams(*conn, session_id)
+
+    @staticmethod
+    async def _close_data(data_writer):
+        try:
+            data_writer.close()
+            await data_writer.wait_closed()
+        except Exception:
+            pass
+
     def _listing(self) -> list:
-        return [f"-rw-r--r-- 1 ftp ftp 1024 Jan 01 12:00 {name}" for name in self.fake_files]
+        # vsftpd's layout: numeric IDs (text_userdb_names=NO), and the year
+        # instead of the time for files over six months old
+        return [f"-rw-r--r--    1 0        0        {FILE_SIZE:>8} Jan 01  2026 {name}"
+                for name in self.fake_files]
 
     async def _handle_list(self, writer: asyncio.StreamWriter,
-                          sess: FTPSession, session_id: str):
-        """Handle LIST command"""
-        # Send fake file listing
+                          sess: FTPSession, session_id: str, names_only: bool = False):
+        """Handle LIST/NLST: the listing goes over the data connection"""
+        data = await self._data_connection(writer, sess, session_id)
+        if data is None:
+            return
+        _, data_writer = data
         await self._send_response(writer, 150, "Here comes the directory listing.")
-        
-        listing = self._listing()
-
-        # In real FTP, this would go over data connection
-        # For honeypot, we'll just send it on control connection
-        for line in listing:
-            writer.write(f"{line}\r\n".encode())
-        await writer.drain()
-
+        lines = self.fake_files if names_only else self._listing()
+        data_writer.write(''.join(f"{line}\r\n" for line in lines).encode())
+        await data_writer.drain()
+        await self._close_data(data_writer)
         await self._send_response(writer, 226, "Directory send OK.")
-        
+
         # Log listing request
         event = ProtocolEvent(
             timestamp=datetime.utcnow().isoformat(),
@@ -374,9 +492,9 @@ class FTPHoneypot(HoneypotService):
             session_id=session_id,
             decoded_payload={'files': self.fake_files}
         )
-        
+
         await self.telemetry.log_event(event)
-    
+
     async def _handle_download(self, filename: str,
                                writer: asyncio.StreamWriter,
                                sess: FTPSession, session_id: str):
@@ -393,45 +511,63 @@ class FTPHoneypot(HoneypotService):
             session_id=session_id,
             decoded_payload={'filename': filename}
         )
-        
+
         await self.telemetry.log_event(event)
-        
-        if filename in self.fake_files:
-            # Size matches the 1024 bytes shown in the LIST output
-            await self._send_response(
-                writer, 150,
-                f"Opening BINARY mode data connection for {filename} (1024 bytes).")
-            # Fake file transfer
-            await asyncio.sleep(0.1)
-            await self._send_response(writer, 226, "Transfer complete.")
-        else:
+
+        # vsftpd checks the file before touching the data connection
+        name = filename.lstrip('/')
+        if name not in self.fake_files:
             await self._send_response(writer, 550, "Failed to open file.")
-    
+            return
+        data = await self._data_connection(writer, sess, session_id)
+        if data is None:
+            return
+        _, data_writer = data
+        mode = 'BINARY' if sess.binary else 'ASCII'
+        await self._send_response(
+            writer, 150, f"Opening {mode} mode data connection for {name} ({FILE_SIZE} bytes).")
+        data_writer.write(fake_content(name))
+        await data_writer.drain()
+        await self._close_data(data_writer)
+        await self._send_response(writer, 226, "Transfer complete.")
+
     async def _handle_upload(self, filename: str,
                             reader: asyncio.StreamReader,
                             writer: asyncio.StreamWriter,
                             sess: FTPSession, session_id: str):
-        """Handle STOR (upload) command"""
+        """Handle STOR (upload): the file arrives on the data connection"""
+        conn = await self._data_connection(writer, sess, session_id)
+        if conn is None:
+            return
+        data_reader, data_writer = conn
         await self._send_response(writer, 150, "Ok to send data.")
 
-        # Try to capture uploaded data (simplified)
+        data = bytearray()
+        truncated = False
         try:
-            # In real FTP, this comes over data connection
-            # For honeypot demo, we'll attempt to read some data
-            data = await asyncio.wait_for(reader.read(1024*1024), timeout=30.0)  # 1MB max
-            
-            if data:
-                # Save uploaded file
-                metadata = {
-                    'filename': filename,
-                    'username': sess.user
-                }
-                await self.telemetry.save_sample(data, sess.source_ip, 'ftp_upload', metadata)
-        except asyncio.TimeoutError:
+            while True:
+                chunk = await asyncio.wait_for(data_reader.read(65536), timeout=DATA_TIMEOUT)
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) >= MAX_UPLOAD:
+                    del data[MAX_UPLOAD:]
+                    truncated = True
+                    break
+        except (asyncio.TimeoutError, ConnectionError):
             pass
+        await self._close_data(data_writer)
+
+        if data:
+            metadata = {
+                'filename': filename,
+                'username': sess.user,
+                'truncated': truncated
+            }
+            await self.telemetry.save_sample(bytes(data), sess.source_ip, 'ftp_upload', metadata)
 
         await self._send_response(writer, 226, "Transfer complete.")
-        
+
         # Log upload
         event = ProtocolEvent(
             timestamp=datetime.utcnow().isoformat(),
@@ -442,11 +578,11 @@ class FTPHoneypot(HoneypotService):
             protocol='ftp',
             service=self.name,
             session_id=session_id,
-            decoded_payload={'filename': filename}
+            decoded_payload={'filename': filename, 'size': len(data), 'truncated': truncated}
         )
-        
+
         await self.telemetry.log_event(event)
-        logging.warning(f"FTP upload: {filename} from {sess.source_ip}")
+        logging.warning(f"FTP upload: {filename} ({len(data)} bytes) from {sess.source_ip}")
 
 
 if __name__ == "__main__":

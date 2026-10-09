@@ -12,6 +12,8 @@ services:
       - "${HONEYPOT_BIND_IP:-0.0.0.0}:22:2222"      # SSH
       - "${HONEYPOT_BIND_IP:-0.0.0.0}:21:2121"      # FTP
       - "${HONEYPOT_BIND_IP:-0.0.0.0}:53:5353/tcp"  # DNS
+      # FTP passive data ports; same numbers inside and out, matching FTP_PASV_PORTS
+      - "${HONEYPOT_BIND_IP:-0.0.0.0}:40000-40009:40000-40009"
     volumes:
       # Persistent data storage
       - ./honeypot_data:/app/honeypot_data

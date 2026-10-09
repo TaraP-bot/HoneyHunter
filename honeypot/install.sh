@@ -472,7 +472,7 @@ show_firewall_instructions() {
         echo "  Custom      TCP         21          All IPv4, All IPv6"
         echo "  Custom      TCP         22          All IPv4, All IPv6"
         echo "  Custom      TCP         53          All IPv4, All IPv6"
-        echo "  Custom      TCP         5601        All IPv4, All IPv6 (Kibana - optional)"
+        echo "  Custom      TCP         40000-40009 All IPv4, All IPv6 (FTP passive data)"
         echo ""
         echo "Outbound Rules:"
         echo "  All TCP     TCP         All         All IPv4, All IPv6"
@@ -498,7 +498,7 @@ show_firewall_instructions() {
         echo "  Custom      TCP         80          All IPv4, All IPv6"
         echo "  Custom      TCP         21          All IPv4, All IPv6"
         echo "  Custom      TCP         53          All IPv4, All IPv6"
-        echo "  Custom      TCP         5601        All IPv4, All IPv6 (optional)"
+        echo "  Custom      TCP         40000-40009 All IPv4, All IPv6 (FTP passive data)"
         echo ""
         print_warning "Make sure to restrict SSH to your IP address only!"
     fi
