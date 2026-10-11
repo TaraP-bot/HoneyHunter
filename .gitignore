@@ -217,3 +217,4 @@ desktop.ini
 # HTTPS certificate copies and ACME challenge files on the droplet
 certs/
 acme-webroot/
+certs-sonicwall/

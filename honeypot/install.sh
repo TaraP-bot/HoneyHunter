@@ -291,6 +291,22 @@ setup_docker_deployment() {
     chown 1000:1000 $INSTALL_DIR/certs
     chmod 700 $INSTALL_DIR/certs
 
+    # SonicWall persona: a self-signed certificate, as the appliance ships by
+    # default (CN = the X0 interface IP, 192.168.168.168). Generated once and
+    # kept apart from the Let's Encrypt certs/ so certificate reload never
+    # mixes them. Regenerate by deleting the folder and re-running.
+    mkdir -p $INSTALL_DIR/certs-sonicwall
+    if [ ! -f $INSTALL_DIR/certs-sonicwall/fullchain.pem ]; then
+        openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+            -keyout $INSTALL_DIR/certs-sonicwall/privkey.pem \
+            -out $INSTALL_DIR/certs-sonicwall/fullchain.pem \
+            -subj "/C=US/O=SonicWALL/CN=192.168.168.168" >/dev/null 2>&1
+    fi
+    chown -R 1000:1000 $INSTALL_DIR/certs-sonicwall
+    chmod 700 $INSTALL_DIR/certs-sonicwall
+    chmod 600 $INSTALL_DIR/certs-sonicwall/privkey.pem
+    chmod 644 $INSTALL_DIR/certs-sonicwall/fullchain.pem
+
     # Generate Elasticsearch passwords once, keeping any existing values.
     # .env is gitignored and readable by root only
     touch $INSTALL_DIR/.env

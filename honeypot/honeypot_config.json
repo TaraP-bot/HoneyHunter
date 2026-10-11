@@ -15,8 +15,8 @@
     "sonicwall": {
       "enabled": true,
       "port": 8444,
-      "cert": "./certs/fullchain.pem",
-      "key": "./certs/privkey.pem"
+      "cert": "./certs-sonicwall/fullchain.pem",
+      "key": "./certs-sonicwall/privkey.pem"
     },
     "ssh": {
       "enabled": true,

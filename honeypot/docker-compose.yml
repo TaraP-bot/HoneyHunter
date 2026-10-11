@@ -23,6 +23,9 @@ services:
       - ./honeypot_config.json:/app/honeypot_config.json:ro
       # TLS certificate for HTTPS, copied here by the certbot deploy hook
       - ./certs:/app/certs:ro
+      # Self-signed certificate for the SonicWall persona, kept apart from
+      # the Let's Encrypt certs so certificate reload never mixes them
+      - ./certs-sonicwall:/app/certs-sonicwall:ro
       # Let's Encrypt HTTP-01 challenges, written by certbot --webroot
       - ./acme-webroot:/app/acme-webroot:ro
     networks:
