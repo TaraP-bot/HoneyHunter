@@ -63,10 +63,12 @@ class INetSimHoneypot:
 
         # HTTP
         if config['services']['http']['enabled']:
+            acme = config['services']['http'].get('acme_webroot')
             http = HTTPHoneypot(
                 port=config['services']['http']['port'],
                 telemetry=telemetry,
-                server_header=templates.get('http_server')
+                server_header=templates.get('http_server'),
+                acme_webroot=Path(acme) if acme else None
             )
             self.manager.register_service(http)
         
@@ -75,7 +77,8 @@ class INetSimHoneypot:
             https = HTTPHoneypot(
                 port=config['services']['https']['port'],
                 telemetry=telemetry,
-                ssl_cert=Path(config['services']['https'].get('cert', '')),
+                ssl_cert=Path(config['services']['https']['cert']),
+                ssl_key=Path(config['services']['https']['key']),
                 server_header=templates.get('http_server')
             )
             self.manager.register_service(https)

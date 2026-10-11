@@ -10,6 +10,7 @@ services:
       # refuses a 0.0.0.0:22 bind alongside it.
       - "${HONEYPOT_BIND_IP:-0.0.0.0}:80:8080"      # HTTP
       - "${HONEYPOT_BIND_IP:-0.0.0.0}:22:2222"      # SSH
+      - "${HONEYPOT_BIND_IP:-0.0.0.0}:443:8443"     # HTTPS
       - "${HONEYPOT_BIND_IP:-0.0.0.0}:21:2121"      # FTP
       - "${HONEYPOT_BIND_IP:-0.0.0.0}:53:5353/tcp"  # DNS
       # FTP passive data ports; same numbers inside and out, matching FTP_PASV_PORTS
@@ -19,6 +20,10 @@ services:
       - ./honeypot_data:/app/honeypot_data
       # Custom configuration (optional)
       - ./honeypot_config.json:/app/honeypot_config.json:ro
+      # TLS certificate for HTTPS, copied here by the certbot deploy hook
+      - ./certs:/app/certs:ro
+      # Let's Encrypt HTTP-01 challenges, written by certbot --webroot
+      - ./acme-webroot:/app/acme-webroot:ro
     networks:
       - honeypot_net
     logging:

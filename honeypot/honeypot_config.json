@@ -3,12 +3,14 @@
   "services": {
     "http": {
       "enabled": true,
-      "port": 8080
+      "port": 8080,
+      "acme_webroot": "./acme-webroot"
     },
     "https": {
-      "enabled": false,
+      "enabled": true,
       "port": 8443,
-      "cert": "./certs/honeypot.pem"
+      "cert": "./certs/fullchain.pem",
+      "key": "./certs/privkey.pem"
     },
     "ssh": {
       "enabled": true,

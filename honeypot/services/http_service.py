@@ -7,6 +7,7 @@ Emulates web server and captures all requests, headers, payloads
 import asyncio
 import logging
 import re
+import ssl
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 from typing import Dict, Any, Optional
@@ -106,13 +107,26 @@ class HTTPRequest:
         return {k: v for k, v in patterns.items() if v}
 
 
+ACME_PREFIX = '/.well-known/acme-challenge/'
+ACME_TOKEN_RE = re.compile(r'[A-Za-z0-9_-]{1,128}')
+CERT_POLL_SECONDS = 60
+
+
 class HTTPHoneypot(HoneypotService):
     """HTTP/HTTPS honeypot service"""
     
     def __init__(self, port: int, telemetry, ssl_cert: Optional[Path] = None,
-                 server_header: Optional[str] = None):
-        super().__init__("HTTP", port, telemetry)
+                 server_header: Optional[str] = None, ssl_key: Optional[Path] = None,
+                 acme_webroot: Optional[Path] = None):
+        # Distinct names: the manager keys services by name
+        super().__init__("HTTPS" if ssl_cert else "HTTP", port, telemetry)
         self.ssl_cert = ssl_cert
+        self.ssl_key = ssl_key
+        self.ssl_context: Optional[ssl.SSLContext] = None
+        self._cert_mtime = None
+        self._tls_task: Optional[asyncio.Task] = None
+        # Let's Encrypt HTTP-01 challenge files, served as Apache would
+        self.acme_webroot = acme_webroot
         self.server_header = server_header or "Apache/2.4.41 (Ubuntu)"
         
         # Response templates
@@ -123,10 +137,75 @@ class HTTPHoneypot(HoneypotService):
             '404': self._generate_404,
         }
         
+    async def start(self):
+        if not self.ssl_cert:
+            return await super().start()
+        # The certificate is issued after the first deploy and renewed every
+        # few days, so wait for it and keep picking up new copies
+        self._tls_task = asyncio.create_task(self._serve_tls())
+
+    async def stop(self):
+        if self._tls_task:
+            self._tls_task.cancel()
+        await super().stop()
+
+    def _load_certificate(self) -> bool:
+        """Load the certificate when it is new or has changed; True when loaded"""
+        try:
+            mtime = max(self.ssl_cert.stat().st_mtime, self.ssl_key.stat().st_mtime)
+        except OSError:
+            return False
+        if mtime == self._cert_mtime:
+            return False
+        if self.ssl_context is None:
+            self.ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            self.ssl_context.set_alpn_protocols(['http/1.1'])
+        try:
+            # New handshakes use the reloaded chain; no restart needed
+            self.ssl_context.load_cert_chain(self.ssl_cert, self.ssl_key)
+        except (OSError, ssl.SSLError) as e:
+            logging.error(f"[{self.name}] Certificate not loaded, will retry: {e}")
+            return False
+        self._cert_mtime = mtime
+        logging.info(f"[{self.name}] Loaded certificate {self.ssl_cert}")
+        return True
+
+    async def _serve_tls(self):
+        waiting_logged = False
+        while True:
+            self._load_certificate()
+            if self.server is None:
+                if self._cert_mtime is not None:
+                    self.server = await asyncio.start_server(
+                        self.handle_client, '0.0.0.0', self.port,
+                        ssl=self.ssl_context, ssl_handshake_timeout=10.0)
+                    logging.info(f"[{self.name}] Started on port {self.port}")
+                elif not waiting_logged:
+                    logging.warning(f"[{self.name}] Waiting for {self.ssl_cert}")
+                    waiting_logged = True
+            await asyncio.sleep(CERT_POLL_SECONDS)
+
+    def _acme_response(self, request: 'HTTPRequest') -> Optional[str]:
+        """A challenge file from the ACME webroot, or None for other paths"""
+        if not self.acme_webroot or request.method != 'GET' or \
+                not request.path.startswith(ACME_PREFIX):
+            return None
+        token = request.path[len(ACME_PREFIX):]
+        if not ACME_TOKEN_RE.fullmatch(token):
+            return self._generate_404()
+        path = self.acme_webroot / '.well-known' / 'acme-challenge' / token
+        try:
+            content = path.read_text(encoding='ascii')
+        except (OSError, UnicodeError):
+            return self._generate_404()
+        return self._build_response(200, 'OK', content, 'text/plain')
+
     async def handle_client(self, reader: asyncio.StreamReader, 
                            writer: asyncio.StreamWriter):
         """Handle HTTP client connection"""
         source_ip, source_port = self.get_peer_info(writer)
+        # Read now: TLS transports drop their addresses once closed
+        local_ip, local_port = writer.get_extra_info('sockname')[:2]
         session_id = self.telemetry.generate_session_id(
             source_ip, source_port, self.port
         )
@@ -190,7 +269,7 @@ class HTTPHoneypot(HoneypotService):
             )
             
             # Generate response
-            response = self._select_response(request)
+            response = self._acme_response(request) or self._select_response(request)
             writer.write(response.encode())
             await writer.drain()
             
@@ -209,8 +288,8 @@ class HTTPHoneypot(HoneypotService):
             await self.telemetry.log_event(ProtocolEvent(
                 timestamp=datetime.utcnow().isoformat(), event_type='tcp_connection_closed',
                 source_ip=source_ip, source_port=source_port,
-                dest_port=writer.get_extra_info('sockname')[1],
-                dest_ip=writer.get_extra_info('sockname')[0],
+                dest_port=local_port,
+                dest_ip=local_ip,
                 protocol='tcp', service=self.name, session_id=session_id,
                 decoded_payload={'reason': close_reason},
             ))

@@ -284,6 +284,13 @@ setup_docker_deployment() {
     chown -R 1000:1000 $INSTALL_DIR/honeypot_data
     chmod 750 $INSTALL_DIR/honeypot_data
 
+    # HTTPS: the certbot deploy hook copies the certificate into certs/
+    # (private key readable by the container only); certbot --webroot writes
+    # challenges into acme-webroot/, which the HTTP service serves
+    mkdir -p $INSTALL_DIR/certs $INSTALL_DIR/acme-webroot
+    chown 1000:1000 $INSTALL_DIR/certs
+    chmod 700 $INSTALL_DIR/certs
+
     # Generate Elasticsearch passwords once, keeping any existing values.
     # .env is gitignored and readable by root only
     touch $INSTALL_DIR/.env
@@ -469,6 +476,7 @@ show_firewall_instructions() {
         echo "  Type        Protocol    Ports       Sources"
         echo "  ─────────────────────────────────────────────────────"
         echo "  Custom      TCP         80          All IPv4, All IPv6"
+        echo "  Custom      TCP         443         All IPv4, All IPv6"
         echo "  Custom      TCP         21          All IPv4, All IPv6"
         echo "  Custom      TCP         22          All IPv4, All IPv6"
         echo "  Custom      TCP         53          All IPv4, All IPv6"
@@ -496,6 +504,7 @@ show_firewall_instructions() {
         fi
         
         echo "  Custom      TCP         80          All IPv4, All IPv6"
+        echo "  Custom      TCP         443         All IPv4, All IPv6"
         echo "  Custom      TCP         21          All IPv4, All IPv6"
         echo "  Custom      TCP         53          All IPv4, All IPv6"
         echo "  Custom      TCP         40000-40009 All IPv4, All IPv6 (FTP passive data)"

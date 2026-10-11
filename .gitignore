@@ -213,3 +213,7 @@ desktop.ini
 # Claude Code local state
 # ---------------------------------------------------------------------
 .claude/settings.local.json
+
+# HTTPS certificate copies and ACME challenge files on the droplet
+certs/
+acme-webroot/
