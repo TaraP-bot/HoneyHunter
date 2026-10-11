@@ -21,7 +21,7 @@ import hashlib
 SMALL_SAMPLE = 64
 
 # Container port -> public port, as published in docker-compose.yml
-PUBLIC_PORTS = {2222: 22, 8080: 80, 8443: 443, 2121: 21, 5353: 53}
+PUBLIC_PORTS = {2222: 22, 8080: 80, 8443: 443, 8444: 4433, 2121: 21, 5353: 53}
 
 
 class TelemetryAnalyzer:

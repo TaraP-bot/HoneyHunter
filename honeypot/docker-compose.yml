@@ -11,6 +11,7 @@ services:
       - "${HONEYPOT_BIND_IP:-0.0.0.0}:80:8080"      # HTTP
       - "${HONEYPOT_BIND_IP:-0.0.0.0}:22:2222"      # SSH
       - "${HONEYPOT_BIND_IP:-0.0.0.0}:443:8443"     # HTTPS
+      - "${HONEYPOT_BIND_IP:-0.0.0.0}:4433:8444"    # SonicWall SSL-VPN
       - "${HONEYPOT_BIND_IP:-0.0.0.0}:21:2121"      # FTP
       - "${HONEYPOT_BIND_IP:-0.0.0.0}:53:5353/tcp"  # DNS
       # FTP passive data ports; same numbers inside and out, matching FTP_PASV_PORTS

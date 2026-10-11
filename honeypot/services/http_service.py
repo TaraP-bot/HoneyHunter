@@ -15,6 +15,7 @@ from pathlib import Path
 
 from honeypot_manager import HoneypotService, ProtocolEvent
 from http_capture import collect_request, extract_parts
+from personas import get_persona
 
 
 class HTTPRequest:
@@ -117,9 +118,11 @@ class HTTPHoneypot(HoneypotService):
     
     def __init__(self, port: int, telemetry, ssl_cert: Optional[Path] = None,
                  server_header: Optional[str] = None, ssl_key: Optional[Path] = None,
-                 acme_webroot: Optional[Path] = None):
+                 acme_webroot: Optional[Path] = None, name: Optional[str] = None,
+                 persona: Optional[str] = None):
         # Distinct names: the manager keys services by name
-        super().__init__("HTTPS" if ssl_cert else "HTTP", port, telemetry)
+        default_name = "HTTPS" if ssl_cert else "HTTP"
+        super().__init__(name or default_name, port, telemetry)
         self.ssl_cert = ssl_cert
         self.ssl_key = ssl_key
         self.ssl_context: Optional[ssl.SSLContext] = None
@@ -127,7 +130,12 @@ class HTTPHoneypot(HoneypotService):
         self._tls_task: Optional[asyncio.Task] = None
         # Let's Encrypt HTTP-01 challenge files, served as Apache would
         self.acme_webroot = acme_webroot
-        self.server_header = server_header or "Apache/2.4.41 (Ubuntu)"
+        # A persona makes this listener look like a specific appliance to
+        # scanners; it supplies the Server header and the login-portal pages.
+        self.persona = get_persona(persona) if persona else None
+        self.server_header = (server_header
+                              or (self.persona.server if self.persona else None)
+                              or "Apache/2.4.41 (Ubuntu)")
         
         # Response templates
         self.response_templates = {
@@ -200,6 +208,16 @@ class HTTPHoneypot(HoneypotService):
             return self._generate_404()
         return self._build_response(200, 'OK', content, 'text/plain')
 
+    def _persona_response(self, request: 'HTTPRequest') -> Optional[str]:
+        """The persona's portal page for this request, or None if no persona"""
+        if not self.persona:
+            return None
+        result = self.persona.respond(request.method, request.path)
+        if result is None:
+            return None
+        status_code, status_text, body, content_type = result
+        return self._build_response(status_code, status_text, body, content_type)
+
     async def handle_client(self, reader: asyncio.StreamReader, 
                            writer: asyncio.StreamWriter):
         """Handle HTTP client connection"""
@@ -269,7 +287,9 @@ class HTTPHoneypot(HoneypotService):
             )
             
             # Generate response
-            response = self._acme_response(request) or self._select_response(request)
+            response = (self._acme_response(request)
+                        or self._persona_response(request)
+                        or self._select_response(request))
             writer.write(response.encode())
             await writer.drain()
             

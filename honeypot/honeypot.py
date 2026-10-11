@@ -83,6 +83,19 @@ class INetSimHoneypot:
             )
             self.manager.register_service(https)
         
+        # SonicWall SSL-VPN persona (TLS listener fingerprinted as the appliance)
+        sonicwall = config['services'].get('sonicwall', {})
+        if sonicwall.get('enabled', False):
+            service = HTTPHoneypot(
+                port=sonicwall['port'],
+                telemetry=telemetry,
+                ssl_cert=Path(sonicwall['cert']),
+                ssl_key=Path(sonicwall['key']),
+                name='SONICWALL',
+                persona='sonicwall'
+            )
+            self.manager.register_service(service)
+
         # SSH
         if config['services']['ssh']['enabled']:
             ssh = SSHHoneypot(

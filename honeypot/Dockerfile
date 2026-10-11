@@ -40,6 +40,7 @@ USER honeypot
 # Expose ports (non-privileged)
 EXPOSE 8080/tcp
 EXPOSE 8443/tcp
+EXPOSE 8444/tcp
 EXPOSE 2222/tcp
 EXPOSE 2121/tcp
 EXPOSE 5353/tcp
