@@ -6,6 +6,7 @@ Captures login attempts, credentials, and commands using asyncssh
 
 import asyncio
 import logging
+import shlex
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -61,6 +62,125 @@ FAKE_FILES = {
 }
 # lib/os-release is what /etc/os-release symlinks to
 FAKE_FILES['/usr/lib/os-release'] = FAKE_FILES['/etc/os-release']
+
+
+# Stop keeping an scp upload past this (matches the FTP service's cap);
+# the rest is still read and acknowledged so the client sees success
+MAX_SCP_UPLOAD = 10 * 1024 * 1024
+
+
+def scp_sink_target(command: str) -> Optional[str]:
+    """Return the target path if command is an scp receive ("scp -t PATH"),
+    which is what the client runs remotely for an upload; else None"""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return None
+    if not parts or os.path.basename(parts[0]) != 'scp':
+        return None
+    flags = ''.join(p[1:] for p in parts[1:] if p.startswith('-') and p != '-')
+    paths = [p for p in parts[1:] if not p.startswith('-') or p == '-']
+    if 't' not in flags or 'f' in flags or len(paths) != 1:
+        return None
+    return paths[0]
+
+
+class ScpSink:
+    """Receiving side of the scp (rcp) protocol, as run by "scp -t".
+
+    The sink sends a zero byte when ready and after each accepted message.
+    The client sends control lines: "C<mode> <size> <name>" followed by the
+    file bytes and a zero byte, "D<mode> 0 <name>" / "E" to enter and leave
+    a directory (-r), "T<mtime> 0 <atime> 0" for times (-p), or a
+    1 (warning) / 2 (fatal) byte followed by a message.
+    """
+
+    def __init__(self, on_file, limit: int = MAX_SCP_UPLOAD):
+        self.on_file = on_file  # called with (data, name, mode, size, complete)
+        self.limit = limit
+        self.buf = bytearray()
+        self.dirs = []
+        self.file = None   # (name, mode, size) while receiving file bytes
+        self.data = bytearray()
+        self.remaining = 0
+        self.done = False
+
+    def feed(self, chunk: bytes) -> bytes:
+        """Consume client bytes; return what the sink sends back"""
+        self.buf.extend(chunk)
+        out = bytearray()
+        while not self.done:
+            if self.file:
+                if self.remaining:
+                    take = min(self.remaining, len(self.buf))
+                    if not take:
+                        break
+                    room = self.limit - len(self.data)
+                    self.data.extend(self.buf[:min(take, max(room, 0))])
+                    del self.buf[:take]
+                    self.remaining -= take
+                    continue
+                if not self.buf:
+                    break
+                # The client follows the file bytes with a status byte
+                del self.buf[:1]
+                self._finish_file(complete=True)
+                out += b'\0'
+                continue
+            end = self.buf.find(b'\n')
+            if end < 0:
+                break
+            line = bytes(self.buf[:end]).decode('utf-8', 'replace')
+            del self.buf[:end + 1]
+            out += self._control(line)
+        return bytes(out)
+
+    def _control(self, line: str) -> bytes:
+        kind, rest = line[:1], line[1:]
+        if kind in ('C', 'D'):
+            try:
+                mode, size, name = rest.split(' ', 2)
+                int(mode, 8)
+                size = int(size)
+                if size < 0 or not name or '/' in name or name in ('.', '..'):
+                    raise ValueError
+            except ValueError:
+                return self._fail('scp: protocol error: bad mode\n')
+            if kind == 'D':
+                self.dirs.append(name)
+            else:
+                self.file = ('/'.join(self.dirs + [name]), mode, size)
+                self.remaining = size
+                self.data = bytearray()
+            return b'\0'
+        if kind == 'E':
+            if self.dirs:
+                self.dirs.pop()
+            return b'\0'
+        if kind == 'T':
+            return b'\0'
+        if kind in ('\x01', '\x02'):
+            # Client-side warning or fatal error; nothing to acknowledge
+            if kind == '\x02':
+                self.done = True
+            return b''
+        return self._fail('scp: protocol error: expected control record\n')
+
+    def _fail(self, message: str) -> bytes:
+        self.done = True
+        return b'\x02' + message.encode()
+
+    def _finish_file(self, complete: bool):
+        name, mode, size = self.file
+        self.file = None
+        self.on_file(bytes(self.data), name, mode, size, complete)
+        self.data = bytearray()
+
+    def close(self):
+        """Connection ended; keep whatever arrived of an unfinished file"""
+        if self.file and self.data:
+            self._finish_file(complete=False)
+        self.done = True
 
 
 def fake_uname(args: list) -> str:
@@ -276,9 +396,9 @@ class SSHHoneypot(HoneypotService):
         logging.info(f"SSH command from {source_ip}: {command}")
 
     async def log_request(self, request: str, value: str, source_ip: str,
-                          session_id: str):
-        """Log a rejected SSH request (exec, subsystem, direct-tcpip) so
-        what the client tried is recorded even though it is not served"""
+                          session_id: str, accepted: bool = False):
+        """Log an SSH request (exec, subsystem, direct-tcpip) so what the
+        client tried is recorded; most are rejected and not served"""
         event = ProtocolEvent(
             timestamp=datetime.utcnow().isoformat(),
             event_type='ssh_request',
@@ -291,12 +411,56 @@ class SSHHoneypot(HoneypotService):
             decoded_payload={
                 'request': request,
                 'value': value,
-                'accepted': False
+                'accepted': accepted
             }
         )
 
         await self.telemetry.log_event(event)
         logging.info(f"SSH {request} request from {source_ip}: {value}")
+
+    async def save_scp_upload(self, data: bytes, name: str, mode: str,
+                              size: int, complete: bool, target: str,
+                              command: str, source_ip: str, session_id: str):
+        """Keep a file received over scp as a sample and log the upload"""
+        truncated = not complete or len(data) < size
+        sha256 = None
+        if data:
+            metadata = {
+                'filename': name,
+                'target': target,
+                'mode': mode,
+                'declared_size': size,
+                'command': command,
+                'session_id': session_id,
+                'artifact_kind': 'scp_upload',
+                'truncated': truncated,
+            }
+            sha256 = await self.telemetry.save_sample(
+                data, source_ip, 'scp_upload', metadata)
+
+        event = ProtocolEvent(
+            timestamp=datetime.utcnow().isoformat(),
+            event_type='ssh_upload',
+            source_ip=source_ip,
+            source_port=0,
+            dest_port=self.port,
+            protocol='ssh',
+            service=self.name,
+            session_id=session_id,
+            decoded_payload={
+                'filename': name,
+                'target': target,
+                'mode': mode,
+                'size': size,
+                'captured': len(data),
+                'truncated': truncated,
+                'sha256': sha256,
+            }
+        )
+
+        await self.telemetry.log_event(event)
+        logging.warning(f"SCP upload: {name} ({len(data)} of {size} bytes) "
+                        f"to {target} from {source_ip}")
 
 
 class SSHServerProtocol(asyncssh.SSHServer):
@@ -363,17 +527,33 @@ class SSHSessionHandler(asyncssh.SSHServerSession):
         self.source_ip = source_ip
         self.session_id = session_id
         self._input = ''
+        self._scp = None
     
     def connection_made(self, chan):
         """Session started"""
         self._chan = chan
     
     def exec_requested(self, command):
-        """Log a command sent without a shell (ssh host 'cmd'); still rejected"""
+        """Log a command sent without a shell (ssh host 'cmd'). Only an scp
+        upload is served, so the file can be captured; the rest are rejected"""
+        target = scp_sink_target(command)
         asyncio.create_task(self.honeypot.log_request(
-            'exec', command, self.source_ip, self.session_id
+            'exec', command, self.source_ip, self.session_id,
+            accepted=target is not None
         ))
-        return False
+        if target is None:
+            return False
+
+        def on_file(data, name, mode, size, complete):
+            asyncio.create_task(self.honeypot.save_scp_upload(
+                data, name, mode, size, complete, target, command,
+                self.source_ip, self.session_id
+            ))
+
+        # File contents are binary; shell sessions keep the UTF-8 default
+        self._chan.set_encoding(None)
+        self._scp = ScpSink(on_file)
+        return True
 
     def subsystem_requested(self, subsystem):
         """Log subsystem requests such as sftp; still rejected"""
@@ -388,6 +568,10 @@ class SSHSessionHandler(asyncssh.SSHServerSession):
     
     def session_started(self):
         """Send welcome message and prompt"""
+        if self._scp:
+            # scp -t signals it is ready to receive with a zero byte
+            self._chan.write(b'\0')
+            return
         self._chan.write(FAKE_MOTD.replace('\n', '\r\n') + '\r\n')
         self._prompt()
 
@@ -399,6 +583,14 @@ class SSHSessionHandler(asyncssh.SSHServerSession):
     
     def data_received(self, data, datatype):
         """Handle received data"""
+        if self._scp:
+            reply = self._scp.feed(data)
+            if reply:
+                self._chan.write(reply)
+            if self._scp.done:
+                self._chan.exit(1)
+            return
+
         # No manual echo: with a PTY, asyncssh's line editor already echoes
         # input and ends the line; without one, real sshd doesn't echo.
         # Echoing again showed every command twice, an obvious tell.
@@ -482,7 +674,14 @@ class SSHSessionHandler(asyncssh.SSHServerSession):
     
     def eof_received(self):
         """Handle EOF"""
+        if self._scp:
+            self._scp.close()
         self._chan.exit(0)
+
+    def connection_lost(self, exc):
+        """Keep a partial scp upload if the client went away mid-file"""
+        if self._scp:
+            self._scp.close()
     
     def break_received(self, msec):
         """Handle break signal"""
