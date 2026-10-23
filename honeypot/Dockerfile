@@ -16,6 +16,13 @@ WORKDIR /app
 # Copy requirements
 COPY requirements.txt .
 
+# Replace the base image's pip first: pip before 26.2.2 always trusts its
+# vendored CA bundle, which still includes the distrusted eMudhra emSign root
+# (https://discuss.python.org/t/109576). Pinned by URL and hash, so the
+# upgrade itself can't be tampered with in transit.
+RUN pip install --no-cache-dir \
+    "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 

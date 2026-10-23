@@ -1,6 +1,10 @@
 # Core dependencies
 asyncio-mqtt==0.16.1
 
+# CA bundle without the distrusted eMudhra emSign root
+# (https://discuss.python.org/t/109576)
+certifi>=2026.10.19
+
 # Optional: ElasticSearch integration
 elasticsearch>=8.0.0,<9.0.0
 
